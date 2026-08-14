@@ -1,7 +1,3 @@
 node_modules/
 .env
-auth_info_baileys/
-**/auth_info_baileys/**
 *.log
-.wwebjs_auth
-.wwebjs_cache
