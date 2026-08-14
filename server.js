@@ -9,7 +9,7 @@ import chalk from "chalk";
 import MainServerLog from "./src/logs/server/MainServerLog.js";
 import GlobalErrorHandler from "./src/middleware/GlobalErrorHandler.middleware.js";
 import requestInfo from "./src/middleware/requestInfo.middleware.js";
-import Database from "./src/config/database.js";
+import Database from "./src/config/database/database.js";
 import connectWhatsApp from "./src/whatsapp/whatsappConnection.js";
 import route from "./src/routes/index.js";
 
