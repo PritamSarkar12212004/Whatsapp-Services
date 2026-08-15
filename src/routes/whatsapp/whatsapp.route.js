@@ -8,7 +8,6 @@ import whatsappDisconnectController from "../../controllers/whatsapp/whatsappDis
 
 const route = express.Router();
 
-// All WhatsApp routes require JWT authentication
 route.use(authMiddleware);
 
 route.post("/connect", asyncHandler(whatsappConnectController));

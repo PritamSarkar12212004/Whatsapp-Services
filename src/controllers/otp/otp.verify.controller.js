@@ -2,6 +2,7 @@ import { decryptHashing } from "../../utils/encrypttion/hashing.util.js";
 import otpModel from "../../models/otp/otp.model.js";
 import userProfileModel from "../../models/user/userProfile.model.js";
 import { generateToken } from "../../utils/token/jwt.util.js";
+import { triggerContactSync } from "../../whatsapp/whatsappManager.js";
 
 const verifyOtpController = async (req, res) => {
   try {
@@ -69,6 +70,17 @@ const verifyOtpController = async (req, res) => {
         }
         : null,
     };
+
+    // User login → refresh their WhatsApp contacts in the background
+    // (fire-and-forget; never blocks or delays the login response).
+    if (existingUser?._id) {
+      triggerContactSync(existingUser._id.toString(), {
+        reason: "login",
+        minIntervalMs: 60 * 1000,
+      }).catch((err) => {
+        console.error("[Contacts Sync] Login-triggered sync failed:", err.message);
+      });
+    }
 
     return res.status(200).json(response);
   } catch (err) {

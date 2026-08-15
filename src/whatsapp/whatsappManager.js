@@ -9,6 +9,7 @@ import chalk from "chalk";
 import clearAuthState from "./clearAuthState.js";
 import whatsappConnectionLog from "../logs/connections/whatsappConnectionLog.js";
 import WhatsAppSession from "../models/whatsapp/whatsappSession.model.js";
+import contactSyncService from "../services/crm/contactSync.service.js";
 
 const AUTH_BASE_FOLDER = path.join(
   path.resolve(),
@@ -37,6 +38,8 @@ const createSession = (userId) => {
     reconnectTimer: null,
     initializationPromise: null,
     disconnecting: false,
+    contactSyncScheduled: false,
+    initialSyncDone: false,
   };
   sessions.set(userId, session);
   return session;
@@ -54,12 +57,6 @@ const updateDbStatus = async (userId, status, extra = {}) => {
   }
 };
 
-/**
- * Connect a user's WhatsApp session.
- * Guarantees ONLY ONE socket per user.
- * If already connected → reuse.
- * If already initializing → return existing promise.
- */
 const connect = async (userId) => {
   let session = sessions.get(userId);
 
@@ -151,8 +148,35 @@ const initializeSocket = async (userId, session) => {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // Trigger the WhatsApp → CRM contact sync only once the connection is fully
+  // online AND initial/app-state synchronization has completed.
+  const maybeTriggerContactSync = () => {
+    if (
+      session.status === "connected" &&
+      session.initialSyncDone &&
+      !session.contactSyncScheduled
+    ) {
+      session.contactSyncScheduled = true;
+      console.log(
+        `[Contacts Sync] Starting contact synchronization for user ${userId}`,
+      );
+      contactSyncService
+        .syncContactsOnConnect(userId, sock, {
+          reason: "connect",
+          authFolder: getAuthFolder(userId),
+        })
+        .catch((error) => {
+          console.error(
+            `[Contacts Sync] Error during contact synchronization:`,
+            error.message,
+          );
+          // Do NOT throw - sync failure must not crash the connection
+        });
+    }
+  };
+
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect, qr, receivedPendingNotifications } = update;
 
     if (qr) {
       session.qr = qr;
@@ -167,6 +191,9 @@ const initializeSocket = async (userId, session) => {
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       session.qr = null;
+      session.contactSyncScheduled = false;
+      session.initialSyncDone = false;
+      contactSyncService.clearUserCache(userId);
 
       console.log(
         chalk.red(`[Baileys] WhatsApp disconnected for user ${userId}`),
@@ -241,6 +268,18 @@ const initializeSocket = async (userId, session) => {
         phoneNumber: phone,
         lastConnectedAt: new Date(),
       });
+      // Reset so a reconnect re-triggers contact sync after initial sync
+      session.contactSyncScheduled = false;
+      maybeTriggerContactSync();
+    }
+
+    // Contact sync must run only AFTER the connection is fully online AND
+    // initial/app-state synchronization has completed. Note: on reconnects with
+    // existing sync data, `receivedPendingNotifications` can arrive BEFORE the
+    // `open` event, so we track both flags and trigger once both are true.
+    if (receivedPendingNotifications) {
+      session.initialSyncDone = true;
+      maybeTriggerContactSync();
     }
   });
 
@@ -256,6 +295,21 @@ const initializeSocket = async (userId, session) => {
   });
 
   return sock;
+};
+
+/**
+ * Run the WhatsApp → CRM contact sync for a user's active socket.
+ * Used by the manual sync endpoint (POST /api/crm/contacts/sync-whatsapp).
+ */
+const triggerContactSync = async (userId, options = {}) => {
+  const sock = getSocket(userId);
+  if (!sock) {
+    return { error: "WhatsApp is not connected" };
+  }
+  return contactSyncService.syncContactsOnConnect(userId, sock, {
+    ...options,
+    authFolder: getAuthFolder(userId),
+  });
 };
 
 /**
@@ -364,4 +418,5 @@ export {
   disconnect,
   restoreSessions,
   getSession,
+  triggerContactSync,
 };

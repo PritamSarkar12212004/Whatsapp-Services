@@ -7,6 +7,7 @@ import profileSetupValidation from "../validation/profile/profile.validation.js"
 import authMiddleware from "../middleware/auth.middleware.js";
 import asyncHandler from "express-async-handler";
 import whatsappRoute from "./whatsapp/whatsapp.route.js";
+import crmRoute from "./crm/crm.route.js";
 
 const route = express.Router();
 const otpRouter = express.Router();
@@ -30,9 +31,11 @@ authRouter.post(
 route.use("/", otpRouter);
 route.use("/", authRouter);
 route.use("/whatsapp", whatsappRoute);
+route.use("/crm", crmRoute);
 
 route.use("/otp", otpRouter);
 route.use("/auth", authRouter);
 route.use("/whatsapp", whatsappRoute);
+route.use("/crm", crmRoute);
 
 export default route;
