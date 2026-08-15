@@ -14,7 +14,9 @@ const verifyOtpController = async (req, res) => {
       });
     }
 
-    const otpRecord = await otpModel.findOne({ wpnumber: phone });
+    const otpRecord = await otpModel.findOne({
+      wpnumber: phone,
+    });
 
     if (!otpRecord) {
       return res.status(404).json({
@@ -22,7 +24,7 @@ const verifyOtpController = async (req, res) => {
         message: "No OTP found for this phone number",
       });
     }
-    
+
     if (otpRecord.expiresAt < new Date()) {
       return res.status(410).json({
         status: "error",
@@ -30,7 +32,10 @@ const verifyOtpController = async (req, res) => {
       });
     }
 
-    const isValid = await decryptHashing(otpRecord.hashedOtp, otp);
+    const isValid = await decryptHashing(
+      otpRecord.hashedOtp,
+      otp
+    );
 
     if (!isValid) {
       return res.status(401).json({
@@ -39,20 +44,35 @@ const verifyOtpController = async (req, res) => {
       });
     }
 
-    // Check if the user profile already exists
-    const existingUser = await userProfileModel.findOne({ wpnumber: phone });
+    const existingUser = await userProfileModel.findOne({
+      wpnumber: phone,
+    });
 
-    // Generate a non-expiring JWT token after successful OTP verification
-    const token = generateToken({ wpnumber: phone });
+    const token = generateToken({
+      wpnumber: phone,
+    });
 
-    return res.status(200).json({
+    const response = {
       status: "success",
       message: "OTP verified successfully",
       token,
       isExistingUser: !!existingUser,
-    });
+      data: existingUser
+        ? {
+          _id: existingUser._id,
+          wpnumber: existingUser.wpnumber,
+          fullName: existingUser.fullName,
+          gender: existingUser.gender,
+          age: existingUser.age,
+          profilePic: existingUser.profilePic,
+        }
+        : null,
+    };
+
+    return res.status(200).json(response);
   } catch (err) {
-    console.error("Error verifying OTP:", err.message);
+    console.error("Error verifying OTP:", err);
+
     return res.status(500).json({
       status: "error",
       message: "Internal server error during OTP verification",

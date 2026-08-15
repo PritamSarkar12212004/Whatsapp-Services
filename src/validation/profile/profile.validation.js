@@ -25,10 +25,6 @@ const profileSetupSchema = Joi.object({
     "number.min": "Age must be at least 1",
     "number.max": "Age cannot be more than 100",
   }),
-
-  token: Joi.string().required().messages({
-    "string.empty": "token is required",
-  }),
 });
 
 const profileSetupValidation = (req, res, next) => {
