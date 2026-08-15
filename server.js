@@ -5,7 +5,7 @@ import helmet from "helmet";
 import dns from "dns";
 import morgan from "morgan";
 import chalk from "chalk";
-
+import cors from 'cors'
 import MainServerLog from "./src/logs/server/MainServerLog.js";
 import GlobalErrorHandler from "./src/middleware/GlobalErrorHandler.middleware.js";
 import requestInfo from "./src/middleware/requestInfo.middleware.js";
@@ -17,7 +17,9 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
-
+app.use(cors({
+  origin: "*"
+}))
 app.use(morgan("dev"));
 app.use(helmet());
 app.use(express.json());

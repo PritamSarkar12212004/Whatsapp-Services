@@ -4,6 +4,7 @@ import verifyOtpController from "../controllers/otp/otp.verify.controller.js";
 import profileSetupController from "../controllers/user/profile.setup.controller.js";
 import { phoneNumber, otpValidation } from "../validation/otp/otp.validation.js";
 import profileSetupValidation from "../validation/profile/profile.validation.js";
+import authMiddleware from "../middleware/auth.middleware.js";
 import asyncHandler from "express-async-handler";
 
 const route = express.Router();
@@ -20,6 +21,7 @@ otpRouter.post("/verify-otp", otpValidation, asyncHandler(verifyOtpController));
 
 authRouter.post(
   "/setup_profile",
+  authMiddleware,
   profileSetupValidation,
   asyncHandler(profileSetupController),
 );

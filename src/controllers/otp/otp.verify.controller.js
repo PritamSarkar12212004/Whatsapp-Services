@@ -1,5 +1,7 @@
 import { decryptHashing } from "../../utils/encrypttion/hashing.util.js";
 import otpModel from "../../models/otp/otp.model.js";
+import userProfileModel from "../../models/user/userProfile.model.js";
+import { generateToken } from "../../utils/token/jwt.util.js";
 
 const verifyOtpController = async (req, res) => {
   try {
@@ -20,7 +22,7 @@ const verifyOtpController = async (req, res) => {
         message: "No OTP found for this phone number",
       });
     }
-
+    
     if (otpRecord.expiresAt < new Date()) {
       return res.status(410).json({
         status: "error",
@@ -37,9 +39,17 @@ const verifyOtpController = async (req, res) => {
       });
     }
 
+    // Check if the user profile already exists
+    const existingUser = await userProfileModel.findOne({ wpnumber: phone });
+
+    // Generate a non-expiring JWT token after successful OTP verification
+    const token = generateToken({ wpnumber: phone });
+
     return res.status(200).json({
       status: "success",
       message: "OTP verified successfully",
+      token,
+      isExistingUser: !!existingUser,
     });
   } catch (err) {
     console.error("Error verifying OTP:", err.message);

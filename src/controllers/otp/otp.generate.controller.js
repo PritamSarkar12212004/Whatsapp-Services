@@ -18,7 +18,7 @@ const generateOtpController = async (req, res) => {
   if (!phone) {
     return res.status(400).json({ message: "Enter valid WhatsApp number" });
   }
-  const otp = await generateOtp();
+  const otp = generateOtp();
 
   let otpRecord = await otpModel.findOne({ wpnumber: phone });
 

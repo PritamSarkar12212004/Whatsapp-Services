@@ -26,10 +26,6 @@ const profileSetupSchema = Joi.object({
     "number.max": "Age cannot be more than 100",
   }),
 
-  profilePic: Joi.string().uri().required().messages({
-    "string.empty": "Profile picture URL is required",
-    "string.uri": "Profile picture must be a valid URL",
-  }),
   token: Joi.string().required().messages({
     "string.empty": "token is required",
   }),
