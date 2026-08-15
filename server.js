@@ -11,6 +11,7 @@ import GlobalErrorHandler from "./src/middleware/GlobalErrorHandler.middleware.j
 import requestInfo from "./src/middleware/requestInfo.middleware.js";
 import Database from "./src/config/database/database.js";
 import connectWhatsApp from "./src/whatsapp/whatsappConnection.js";
+import { restoreSessions } from "./src/whatsapp/whatsappManager.js";
 import route from "./src/routes/index.js";
 
 const app = express();
@@ -33,6 +34,7 @@ app.use(GlobalErrorHandler);
 const start = async () => {
   await Database();
   connectWhatsApp();
+  restoreSessions();
   const server = app.listen(PORT, () => {
     console.log(chalk.green(MainServerLog.STARTUP_LOG(PORT)));
   });

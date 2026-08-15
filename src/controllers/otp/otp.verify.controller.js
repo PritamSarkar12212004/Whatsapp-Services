@@ -50,6 +50,7 @@ const verifyOtpController = async (req, res) => {
 
     const token = generateToken({
       wpnumber: phone,
+      ...(existingUser ? { userId: existingUser._id } : {}),
     });
 
     const response = {

@@ -12,6 +12,8 @@ import whatsappConnectionLog from "../logs/connections/whatsappConnectionLog.js"
 
 let sock = null;
 let retryCount = 0;
+let reconnecting = false;
+let initializationPromise = null;
 const MAX_RETRIES = 5;
 
 const AUTH_FOLDER = path.join(
@@ -19,13 +21,49 @@ const AUTH_FOLDER = path.join(
   "src/whatsapp/auth_info_baileys",
 );
 
+/**
+ * System-level WhatsApp connection used for sending authentication OTPs.
+ * Uses a singleton pattern to guarantee ONLY ONE socket.
+ */
 const whatsappConnect = async () => {
+  // Socket already exists (connecting or connected) → reuse
+  if (sock) {
+    console.log(
+      chalk.green("[Baileys] Connection already active, reusing existing socket"),
+    );
+    return sock;
+  }
+
+  // Already initializing → wait for existing connection
+  if (initializationPromise) {
+    console.log(
+      chalk.yellow(
+        "[Baileys] Connection already initializing, waiting for existing connection",
+      ),
+    );
+    return initializationPromise;
+  }
+
+  // Set initialization promise to prevent concurrent init
+  initializationPromise = initializeSocket();
+
+  try {
+    return await initializationPromise;
+  } finally {
+    initializationPromise = null;
+  }
+};
+
+const initializeSocket = async () => {
+  // Clean up old socket if exists
   if (sock) {
     try {
       sock.end();
     } catch (_) {}
     sock = null;
   }
+
+  console.log(chalk.cyan("[Baileys] Initializing WhatsApp connection..."));
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
   let version;
@@ -68,7 +106,6 @@ const whatsappConnect = async () => {
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
       console.log(
         chalk.red(whatsappConnectionLog.CONNECTION.CONNECTION_CLOSED),
@@ -78,18 +115,46 @@ const whatsappConnect = async () => {
           whatsappConnectionLog.CONNECTION.DISCONNECT_REASON(statusCode),
         ),
       );
-      console.log(
-        chalk.yellow(
-          whatsappConnectionLog.CONNECTION.RETRY_COUNT(retryCount, MAX_RETRIES),
-        ),
-      );
+
+      // Permanent logout → clean up, do NOT reconnect
+      if (statusCode === DisconnectReason.loggedOut) {
+        console.log(chalk.red(whatsappConnectionLog.WARNING.AUTH_REJECTED));
+        clearAuthState();
+        sock = null;
+        retryCount = 0;
+        reconnecting = false;
+        return;
+      }
+
+      // Conflict / replaced (440) → prevent duplicate socket creation
+      if (statusCode === 440) {
+        console.log(
+          chalk.yellow(
+            "[Baileys] Conflict detected - preventing duplicate socket creation",
+          ),
+        );
+        sock = null;
+        retryCount = 0;
+        reconnecting = false;
+        return;
+      }
 
       if (statusCode === 405 || statusCode === 401) {
         console.log(chalk.red(whatsappConnectionLog.WARNING.AUTH_REJECTED));
         clearAuthState();
+        sock = null;
+        retryCount = 0;
+        reconnecting = false;
+        return;
       }
 
-      if (shouldReconnect && retryCount < MAX_RETRIES) {
+      // Temporary disconnects → controlled reconnect
+      const shouldReconnect =
+        statusCode !== DisconnectReason.loggedOut &&
+        statusCode !== DisconnectReason.multideviceMismatch;
+
+      if (shouldReconnect && retryCount < MAX_RETRIES && !reconnecting) {
+        reconnecting = true;
         retryCount++;
         const delay = Math.min(3000 * (retryCount + 1), 15000);
         console.log(
@@ -100,12 +165,20 @@ const whatsappConnect = async () => {
             ),
           ),
         );
-        setTimeout(() => whatsappConnect(), delay);
+        setTimeout(() => {
+          reconnecting = false;
+          sock = null;
+          whatsappConnect();
+        }, delay);
       } else if (retryCount >= MAX_RETRIES) {
         console.log(chalk.red(whatsappConnectionLog.CONNECTION.MAX_RETRIES));
+        sock = null;
+        retryCount = 0;
+        reconnecting = false;
       }
     } else if (connection === "open") {
       retryCount = 0;
+      reconnecting = false;
       const phone = sock.user?.id?.split(":")[0] || "Unknown";
       const userId = sock.user?.id || "Unknown";
       console.log(

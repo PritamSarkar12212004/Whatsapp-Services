@@ -1,22 +1,17 @@
 import userProfileModel from "../../models/user/userProfile.model.js";
+import { generateToken } from "../../utils/token/jwt.util.js";
 
 const profileSetupController = async (req, res) => {
   try {
-    const { fullName, gender, age, profilePic } = req.body;
+    const { fullName, gender, age } = req.body;
 
+    // Get wpnumber from authenticated JWT (req.user)
     const wpnumber = req.user?.wpnumber;
 
     if (!wpnumber) {
       return res.status(401).json({
         status: "error",
-        message: "Unauthorized. Invalid user token.",
-      });
-    }
-
-    if (!fullName || !gender || !age) {
-      return res.status(400).json({
-        status: "error",
-        message: "Full name, gender and age are required",
+        message: "User not authenticated",
       });
     }
 
@@ -36,30 +31,30 @@ const profileSetupController = async (req, res) => {
       fullName,
       gender,
       age,
-      profilePic,
+    });
+
+    // Generate a new JWT with userId after profile creation
+    const token = generateToken({
+      userId: user._id,
+      wpnumber: user.wpnumber,
     });
 
     const responseData = {
-      _id: user._id,
       wpnumber: user.wpnumber,
       fullName: user.fullName,
       gender: user.gender,
       age: user.age,
-      profilePic: user.profilePic,
+      _id: user._id,
     };
 
     return res.status(201).json({
       status: "success",
       message: "Profile setup successful",
       data: responseData,
+      token,
     });
   } catch (err) {
-    console.error("Profile setup error:", err);
-
-    return res.status(500).json({
-      status: "error",
-      message: err.message,
-    });
+    return res.status(500).json({ message: err.message });
   }
 };
 

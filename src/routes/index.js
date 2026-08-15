@@ -6,6 +6,7 @@ import { phoneNumber, otpValidation } from "../validation/otp/otp.validation.js"
 import profileSetupValidation from "../validation/profile/profile.validation.js";
 import authMiddleware from "../middleware/auth.middleware.js";
 import asyncHandler from "express-async-handler";
+import whatsappRoute from "./whatsapp/whatsapp.route.js";
 
 const route = express.Router();
 const otpRouter = express.Router();
@@ -28,8 +29,10 @@ authRouter.post(
 
 route.use("/", otpRouter);
 route.use("/", authRouter);
+route.use("/whatsapp", whatsappRoute);
 
 route.use("/otp", otpRouter);
 route.use("/auth", authRouter);
+route.use("/whatsapp", whatsappRoute);
 
 export default route;

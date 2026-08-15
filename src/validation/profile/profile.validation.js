@@ -3,9 +3,8 @@ import Joi from "joi";
 const profileSetupSchema = Joi.object({
   wpnumber: Joi.string()
     .pattern(/^[0-9]{10}$/)
-    .required()
+    .optional()
     .messages({
-      "string.empty": "Phone number is required",
       "string.pattern.base": "Phone number must be exactly 10 digits",
     }),
 
