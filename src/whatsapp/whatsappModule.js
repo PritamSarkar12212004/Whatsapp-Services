@@ -156,13 +156,13 @@ export const sendUserMediaMessage = async (userId, number, opts = {}) => {
         case "image":
           sendPromise = client.sendMessage(chatId, {
             image: { url: media?.url },
-            caption: text || media?.caption || "",
+            caption: text || "",
           });
           break;
         case "video":
           sendPromise = client.sendMessage(chatId, {
             video: { url: media?.url },
-            caption: text || media?.caption || "",
+            caption: text || "",
             mimetype: media?.mimeType || "video/mp4",
           });
           break;
@@ -179,7 +179,7 @@ export const sendUserMediaMessage = async (userId, number, opts = {}) => {
             fileName: media?.filename || "file",
             mimetype:
               media?.mimeType || mimeFromFilename(media?.filename),
-            caption: text || media?.caption || "",
+            caption: text || "",
           });
           break;
         default:

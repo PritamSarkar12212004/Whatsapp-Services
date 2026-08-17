@@ -1,0 +1,296 @@
+import Message from "../../models/messaging/message.model.js";
+import Contact from "../../models/messaging/contact.model.js";
+import Campaign from "../../models/messaging/campaign.model.js";
+import activityService from "./activity.service.js";
+import templateService from "./template.service.js";
+import { normalizePhoneNumber } from "../../utils/messaging/phone.util.js";
+import {
+  renderTemplate,
+  renderTemplateMedia,
+} from "../../utils/messaging/template.util.js";
+import campaignQueue from "../../queue/campaignQueue.js";
+
+const messageService = {
+  /**
+   * External/backend-to-backend transactional send.
+   *
+   * Flow: validate recipient -> find template -> render variables ->
+   * create message -> queue -> send via existing Baileys transport ->
+   * update status.
+   */
+  async sendTransactional(ownerId, payload) {
+    const { template, variables = {} } = payload;
+    const to = Array.isArray(payload.to) ? payload.to : [payload.to];
+
+    if (!payload.to) {
+      const e = new Error("Recipient 'to' is required");
+      e.statusCode = 400;
+      throw e;
+    }
+    if (!template) {
+      const e = new Error("Template identifier is required");
+      e.statusCode = 400;
+      throw e;
+    }
+
+    // Normalize every recipient phone number up-front
+    const phoneNumbers = [];
+    for (const raw of to) {
+      const pn = normalizePhoneNumber(raw);
+      if (!pn) {
+        const e = new Error(`Invalid recipient phone number: ${raw}`);
+        e.statusCode = 400;
+        throw e;
+      }
+      if (!phoneNumbers.includes(pn)) phoneNumbers.push(pn);
+    }
+    if (phoneNumbers.length === 0) {
+      const e = new Error("Recipient 'to' is required");
+      e.statusCode = 400;
+      throw e;
+    }
+
+    // Find template (owner-scoped)
+    const tmpl = await templateService.findTemplate(ownerId, template);
+
+    // Dev-mode templates only run when one of their campaigns is RUNNING.
+    // The campaign is the activation gate:
+    //  - no (non-cancelled) campaign      -> blocked ("not added")
+    //  - campaigns exist, all paused      -> blocked ("paused")
+    //  - campaigns exist but none running -> blocked ("not running")
+    //  - at least one queued/running      -> allowed
+    if (tmpl.devMode) {
+      const linkedCampaigns = await Campaign.find({
+        owner: ownerId,
+        template: tmpl._id,
+        status: { $ne: "cancelled" },
+      })
+        .select("status")
+        .lean()
+        .exec();
+      if (linkedCampaigns.length === 0) {
+        const e = new Error(
+          "Dev template is not added to any campaign — create a campaign with this template first",
+        );
+        e.statusCode = 400;
+        throw e;
+      }
+      const allPaused = linkedCampaigns.every((c) => c.status === "paused");
+      if (allPaused) {
+        const e = new Error(
+          "Campaign is paused for this template — resume the campaign to enable API sends",
+        );
+        e.statusCode = 400;
+        throw e;
+      }
+      const isRunning = linkedCampaigns.some((c) =>
+        ["queued", "running"].includes(c.status),
+      );
+      if (!isRunning) {
+        const e = new Error(
+          "No running campaign for this template — start the campaign to enable API sends",
+        );
+        e.statusCode = 400;
+        throw e;
+      }
+
+      // The gate passed — count this API call against the linked campaigns
+      // so the dev-campaign live stats can show how many calls came in.
+      await Campaign.updateMany(
+        {
+          owner: ownerId,
+          template: tmpl._id,
+          status: { $ne: "cancelled" },
+        },
+        { $inc: { "devStats.apiCalls": phoneNumbers.length } },
+      ).exec();
+    }
+
+    const rendered = renderTemplate(tmpl.content, variables);
+    // Media can be overridden per call (dynamic link); falls back to the
+    // template's own media when not provided.
+    const renderedMedia = renderTemplateMedia(payload.media || tmpl.media, variables);
+
+    // When a media override is sent with a text template, infer the media
+    // type from the URL extension so the file actually gets sent as media.
+    // Extension-less URLs (e.g. gstatic/encrypted image links) fall back to
+    // the provided mimeType.
+    let sendType = tmpl.type || "text";
+    if (sendType === "text" && renderedMedia?.url) {
+      const url = String(renderedMedia.url).toLowerCase();
+      if (/\.(jpe?g|png|gif|webp|svg|bmp|ico)(\?|#|$)/.test(url)) sendType = "image";
+      else if (/\.(mp4|webm|mov|mkv)(\?|#|$)/.test(url)) sendType = "video";
+      else if (/\.(mp3|m4a|wav|ogg|aac)(\?|#|$)/.test(url)) sendType = "audio";
+      else if (/\.(pdf|docx?|xlsx?|pptx?|txt|csv)(\?|#|$)/.test(url)) sendType = "document";
+      else {
+        const mt = String(renderedMedia.mimeType || "").toLowerCase();
+        if (mt.startsWith("image/")) sendType = "image";
+        else if (mt.startsWith("video/")) sendType = "video";
+        else if (mt.startsWith("audio/")) sendType = "audio";
+        else if (/pdf|word|excel|powerpoint|officedocument/.test(mt))
+          sendType = "document";
+      }
+    }
+
+    // Scheduled? Future date -> message is created as "scheduled" and the
+    // queue auto-starts it when the time arrives.
+    let scheduledAt = null;
+    if (payload.scheduledAt) {
+      const d = new Date(payload.scheduledAt);
+      if (Number.isNaN(d.getTime())) {
+        const e = new Error("scheduledAt must be a valid date (24h format)");
+        e.statusCode = 400;
+        throw e;
+      }
+      if (d.getTime() > Date.now()) scheduledAt = d;
+    }
+
+    const messages = [];
+    for (const phoneNumber of phoneNumbers) {
+      // Find or create a lightweight contact record for the recipient
+      let contact = await Contact.findOne({ owner: ownerId, phoneNumber }).exec();
+      let contactId = null;
+      if (!contact) {
+        contact = await Contact.create({
+          owner: ownerId,
+          phoneNumber,
+          isSavedContact: false,
+          isUnknown: true,
+          name: variables.name || null,
+        });
+        contactId = contact._id;
+        await activityService.logActivity(ownerId, contactId, "imported", {
+          source: "transactional_send",
+        });
+      } else {
+        contactId = contact._id;
+      }
+
+      // Create a message record (outbound, from the API).
+      // template + source are set so dev-campaign stats can count calls.
+      const message = await Message.create({
+        owner: ownerId,
+        contact: contactId,
+        direction: "outbound",
+        type: sendType,
+        content: rendered,
+        to: phoneNumber,
+        status: scheduledAt ? "scheduled" : "queued",
+        scheduledAt,
+        template: tmpl._id,
+        source: "api",
+        media: renderedMedia || tmpl.media || null,
+      });
+      messages.push(message);
+
+      await activityService.logActivity(ownerId, contactId, "message_sent", {
+        messageId: message._id,
+      });
+
+      // Immediate delivery (or the scheduled sweep will pick it up later)
+      if (!scheduledAt) {
+        await campaignQueue.enqueueMessage({
+          messageId: message._id.toString(),
+          ownerId: ownerId.toString(),
+          phoneNumber,
+          rendered,
+          type: sendType,
+          media: renderedMedia || tmpl.media || null,
+          campaignId: null,
+        });
+      }
+    }
+
+    return { messages, rendered };
+  },
+
+  /** List messages for the owner with pagination. */
+  async listMessages(ownerId, options = {}) {
+    const page = Math.max(1, parseInt(options.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(options.limit, 10) || 20));
+    const skip = (page - 1) * limit;
+
+    const query = { owner: ownerId };
+    if (options.direction) query.direction = options.direction;
+    if (options.status) query.status = options.status;
+    if (options.contactId) query.contact = options.contactId;
+    if (options.campaignId) query.campaign = options.campaignId;
+
+    const [total, messages] = await Promise.all([
+      Message.countDocuments(query).exec(),
+      Message.find(query)
+        .populate("contact", "name phoneNumber")
+        .populate("campaign", "name")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .exec(),
+    ]);
+
+    return {
+      messages,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNext: page < Math.ceil(total / limit),
+        hasPrev: page > 1,
+      },
+    };
+  },
+
+  /** Get a single message (owner-scoped). */
+  async getMessage(ownerId, id) {
+    const message = await Message.findOne({ _id: id, owner: ownerId })
+      .populate("contact", "name phoneNumber")
+      .populate("campaign", "name")
+      .exec();
+    if (!message) {
+      const e = new Error("Message not found");
+      e.statusCode = 404;
+      throw e;
+    }
+    return message;
+  },
+
+  /**
+   * Cancel a pending message (scheduled / queued / sending / pending).
+   * The queue skips it because the record is no longer "queued" when the
+   * worker picks it up; scheduled messages are not picked by the sweep.
+   */
+  async cancelMessage(ownerId, id) {
+    const message = await Message.findOne({ _id: id, owner: ownerId }).exec();
+    if (!message) {
+      const e = new Error("Message not found");
+      e.statusCode = 404;
+      throw e;
+    }
+    if (["sent", "delivered", "read", "failed", "cancelled", "skipped"].includes(message.status)) {
+      const e = new Error(`Message already ${message.status} — cannot cancel`);
+      e.statusCode = 400;
+      throw e;
+    }
+    message.status = "cancelled";
+    await message.save();
+    return message;
+  },
+
+  /**
+   * Record the outcome of a send attempt on a Message document.
+   * Called by the queue worker.
+   */
+  async updateMessageStatus(messageId, status, opts = {}) {
+    const updates = { status };
+    if (opts.whatsappMessageId)
+      updates.whatsappMessageId = opts.whatsappMessageId;
+    if (opts.error) updates.error = opts.error;
+    if (opts.sentAt) updates.sentAt = opts.sentAt;
+    if (opts.deliveredAt) updates.deliveredAt = opts.deliveredAt;
+    if (opts.failedAt) updates.failedAt = opts.failedAt;
+
+    await Message.updateOne({ _id: messageId }, { $set: updates }).exec();
+  },
+};
+
+export default messageService;

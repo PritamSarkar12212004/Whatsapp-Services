@@ -18,10 +18,10 @@ import {
   sendUserMessage,
   sendUserMediaMessage,
 } from "../whatsapp/whatsappModule.js";
-import Campaign from "../models/crm/campaign.model.js";
-import CampaignRecipient from "../models/crm/campaignRecipient.model.js";
-import Message from "../models/crm/message.model.js";
-import ContactActivity from "../models/crm/contactActivity.model.js";
+import Campaign from "../models/messaging/campaign.model.js";
+import CampaignRecipient from "../models/messaging/campaignRecipient.model.js";
+import Message from "../models/messaging/message.model.js";
+import ContactActivity from "../models/messaging/contactActivity.model.js";
 import mongoose from "mongoose";
 
 const BATCH_SIZE = parseInt(process.env.CAMPAIGN_BATCH_SIZE || "5", 10);
@@ -187,7 +187,7 @@ const _autoStartDue = async () => {
     for (const c of due) {
       console.log(`[CRM Queue] Auto-starting scheduled campaign ${c._id}`);
       const { default: campaignService } = await import(
-        "../services/crm/campaign.service.js"
+        "../services/messaging/campaign.service.js"
       );
       try {
         const result = await campaignService.startCampaign(
@@ -209,10 +209,83 @@ const _autoStartDue = async () => {
   }
 };
 
+/**
+ * Auto-enqueue transactional messages whose scheduledAt time has arrived.
+ * Runs on the same 15s sweep as campaigns.
+ */
+const _autoStartDueMessages = async () => {
+  try {
+    const due = await Message.find({
+      owner: { $exists: true },
+      status: "scheduled",
+      scheduledAt: { $lte: new Date() },
+    })
+      .select("_id owner to content type media")
+      .exec();
+
+    for (const msg of due) {
+      console.log(`[CRM Queue] Auto-starting scheduled message ${msg._id}`);
+      await Message.updateOne(
+        { _id: msg._id },
+        { $set: { status: "queued" } },
+      ).exec();
+      enqueueMessage({
+        messageId: msg._id.toString(),
+        ownerId: msg.owner.toString(),
+        phoneNumber: msg.to,
+        rendered: msg.content,
+        type: msg.type,
+        media: msg.media || null,
+        campaignId: null,
+      });
+    }
+  } catch (err) {
+    console.error("[CRM Queue] scheduled message sweep error:", err.message);
+  }
+};
+
 // Periodic self-heal: auto-start due schedules + re-enqueue jobs lost when
 // the in-memory queue was wiped (e.g. server restart) or a send died midway.
+// Stuck "sending" messages (a send attempt died without settling the record)
+// are reset to queued and re-enqueued so nothing is lost forever.
+const _recoverStuckSending = async () => {
+  try {
+    const stuck = await Message.find({
+      status: "sending",
+      $or: [
+        { sentAt: { $lte: new Date(Date.now() - 60 * 1000) } },
+        { updatedAt: { $lte: new Date(Date.now() - 60 * 1000) } },
+        { sentAt: null, updatedAt: { $lte: new Date(Date.now() - 30 * 1000) } },
+      ],
+    })
+      .select("_id owner to content type media")
+      .exec();
+
+    for (const msg of stuck) {
+      await Message.updateOne(
+        { _id: msg._id },
+        { $set: { status: "queued" } },
+      ).exec();
+      console.log(`[CRM Queue] Recovering stuck sending message ${msg._id}`);
+      enqueueMessage({
+        messageId: msg._id.toString(),
+        ownerId: msg.owner.toString(),
+        phoneNumber: msg.to,
+        rendered: msg.content,
+        type: msg.type,
+        media: msg.media || null,
+        campaignId: null,
+      });
+    }
+  } catch (err) {
+    console.error("[CRM Queue] stuck sending recovery error:", err.message);
+  }
+};
+
 setInterval(() => {
   _autoStartDue();
+  _autoStartDueMessages();
+  _recoverStuckSending();
   recoverPendingJobs();
 }, 15000);
 
@@ -265,12 +338,17 @@ const _markRecipientSkipped = async (job) => {
 const _syncCampaignStatus = async (campaignId) => {
   if (!campaignId || !mongoose.isValidObjectId(campaignId)) return;
   try {
+    const campaign = await Campaign.findById(campaignId).exec();
+    if (!campaign) return;
+
+    // Dev campaigns are pure live switches — they never send to an audience
+    // and must never complete automatically (running or paused only).
+    if (campaign.devTemplate) return;
+
     const remaining = await CampaignRecipient.countDocuments({
       campaign: campaignId,
       status: { $in: ["pending", "queued", "sending"] },
     }).exec();
-    const campaign = await Campaign.findById(campaignId).exec();
-    if (!campaign) return;
 
     if (campaign.status === "queued" && remaining > 0) {
       campaign.status = "running";
@@ -337,10 +415,14 @@ const _sendCampaignRecipient = async (job) => {
     }
   }
 
+  // Use the per-recipient rendered media (dynamic {{variable}} URLs/captions)
+  // when available; fall back to the template's raw media.
+  const media = recipient.renderedMedia || job.templateMedia || null;
+
   const result = await sendUserMediaMessage(job.ownerId, recipient.phoneNumber, {
     text: recipient.renderedMessage,
     type: job.templateType || "text",
-    media: job.templateMedia || null,
+    media,
   });
 
   if (result.success) {
@@ -450,6 +532,12 @@ const _sendMessage = async (job) => {
         await _incrementCampaignStat(job.campaignId, "failed");
       }
     } else {
+      // Reset the record back to queued so the retry actually picks it up
+      // (otherwise findOneAndUpdate skips it and it stays "sending" forever).
+      await Message.updateOne(
+        { _id: job.messageId },
+        { $set: { status: "queued" } },
+      ).exec();
       const retryJob = { ...job, retryCount: retries };
       setTimeout(() => {
         queue.push(retryJob);

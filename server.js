@@ -29,7 +29,7 @@ app.use(
 );
 app.use(morgan("dev"));
 app.use(helmet({ crossOriginResourcePolicy: false }));
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
 app.use(requestInfo);
 
 // Handle preflight OPTIONS requests (Express 5 compatible)

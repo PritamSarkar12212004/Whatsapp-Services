@@ -9,7 +9,7 @@ import chalk from "chalk";
 import clearAuthState from "./clearAuthState.js";
 import whatsappConnectionLog from "../logs/connections/whatsappConnectionLog.js";
 import WhatsAppSession from "../models/whatsapp/whatsappSession.model.js";
-import contactSyncService from "../services/crm/contactSync.service.js";
+import contactSyncService from "../services/messaging/contactSync.service.js";
 
 const AUTH_BASE_FOLDER = path.join(
   path.resolve(),
@@ -299,7 +299,7 @@ const initializeSocket = async (userId, session) => {
 
 /**
  * Run the WhatsApp → CRM contact sync for a user's active socket.
- * Used by the manual sync endpoint (POST /api/crm/contacts/sync-whatsapp).
+ * Used by the manual sync endpoint (POST /api/messaging/contacts/sync-whatsapp).
  */
 const triggerContactSync = async (userId, options = {}) => {
   const sock = getSocket(userId);
@@ -384,6 +384,62 @@ const disconnect = async (userId) => {
 };
 
 /**
+ * FULL logout — unlink the device from WhatsApp servers AND delete the local
+ * auth state folder. The next connect will require a fresh QR scan.
+ */
+const logout = async (userId) => {
+  const session = sessions.get(userId);
+
+  if (session?.socket) {
+    try {
+      // Gracefully unlink the device from WhatsApp servers.
+      // The connection closes with DisconnectReason.loggedOut → the close
+      // handler below clears auth state and removes the session as well.
+      await session.socket.logout();
+      console.log(
+        chalk.red(`[Baileys] Logout request sent for user ${userId}`),
+      );
+    } catch (err) {
+      console.log(
+        chalk.yellow(
+          `[Baileys] socket.logout() failed for ${userId}: ${err.message}`,
+        ),
+      );
+      try {
+        session.socket.end();
+      } catch (_) {}
+    }
+  }
+
+  // Clear reconnect timer
+  if (session?.reconnectTimer) {
+    clearTimeout(session.reconnectTimer);
+    session.reconnectTimer = null;
+  }
+
+  // Always delete local auth state → next connect requires a QR scan.
+  clearAuthState(userId);
+
+  if (session) {
+    session.socket = null;
+    session.qr = null;
+    session.status = "logged_out";
+    session.disconnecting = true;
+    sessions.delete(userId);
+  }
+
+  await updateDbStatus(userId, "logged_out", {
+    lastDisconnectedAt: new Date(),
+  });
+
+  console.log(
+    chalk.red(
+      `[Baileys] User ${userId} fully logged out — QR scan required to reconnect`,
+    ),
+  );
+};
+
+/**
  * Restore active sessions on server restart.
  * Only reconnects sessions marked as "connected" in DB.
  */
@@ -416,6 +472,7 @@ export {
   getQR,
   getStatus,
   disconnect,
+  logout,
   restoreSessions,
   getSession,
   triggerContactSync,
