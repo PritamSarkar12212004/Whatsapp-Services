@@ -1,29 +1,22 @@
 import mongoose from "mongoose";
 import Campaign from "../../models/messaging/campaign.model.js";
 import CampaignRecipient from "../../models/messaging/campaignRecipient.model.js";
-import Contact from "../../models/messaging/contact.model.js";
-import { normalizePhoneNumber } from "../../utils/messaging/phone.util.js";
 import {
   renderTemplate,
   renderTemplateMedia,
 } from "../../utils/messaging/template.util.js";
-import campaignQueue from "../../queue/campaignQueue.js";
+import campaignQueue from "../../jobs/campaign.queue.js";
+import { canTransition } from "./campaign/campaign.helpers.js";
+import {
+  generateAudience,
+  previewAudience,
+  previewMessage,
+} from "./campaign/campaign.audience.js";
+import { getDevStats } from "./campaign/campaign.stats.js";
 
-const VALID_TRANSITIONS = {
-  draft: ["scheduled", "queued", "running", "cancelled"],
-  scheduled: ["queued", "running", "paused", "cancelled", "failed"],
-  queued: ["running", "paused", "cancelled", "failed"],
-  running: ["paused", "completed", "cancelled", "failed"],
-  paused: ["running", "cancelled", "failed"],
-  completed: [],
-  cancelled: [],
-  failed: ["queued", "running", "cancelled"],
-};
-
-const canTransition = (from, to) => {
-  const allowed = VALID_TRANSITIONS[from] || [];
-  return allowed.includes(to);
-};
+// See: ./campaign/campaign.helpers.js (status transitions, model loaders)
+// See: ./campaign/campaign.audience.js (audience + previews)
+// See: ./campaign/campaign.stats.js (dev live stats)
 
 const campaignService = {
   /** List campaigns for the owner, optionally filtered by status. */
@@ -146,61 +139,8 @@ const campaignService = {
    * Excluded contacts (audience.excludedContacts) are removed.
    */
   async generateAudience(campaign) {
-    const ownerId = campaign.owner;
-    const { groups, tags, contacts: selected, excludedContacts } =
-      campaign.audience || {};
-
-    const orConditions = [];
-    if (Array.isArray(groups) && groups.length) {
-      orConditions.push({ customGroups: { $in: groups } });
-    }
-    if (Array.isArray(tags) && tags.length) {
-      orConditions.push({ tags: { $in: tags } });
-    }
-    if (Array.isArray(selected) && selected.length) {
-      orConditions.push({ _id: { $in: selected } });
-    }
-
-    // If no audience source is selected, there is nobody to send to
-    if (!orConditions.length) {
-      return { contacts: [], excluded: 0 };
-    }
-
-    const excludedIds = Array.from(
-      new Set(
-        (Array.isArray(excludedContacts) ? excludedContacts : [])
-          .map((c) => c.toString())
-          .filter(Boolean),
-      ),
-    );
-
-    const baseMatch = {
-      owner: ownerId,
-      isBlocked: { $ne: true },
-      isOptedOut: { $ne: true },
-      $or: orConditions,
-    };
-
-    if (excludedIds.length) {
-      baseMatch._id = { $nin: excludedIds };
-    }
-
-    const matched = await Contact.find(baseMatch)
-      .select("_id phoneNumber name")
-      .exec();
-
-    // Count how many were excluded due to block/opt-out
-    const blockExcludeMatch = {
-      owner: ownerId,
-      $or: orConditions,
-      $or: [{ isBlocked: true }, { isOptedOut: true }],
-    };
-    if (excludedIds.length) {
-      blockExcludeMatch._id = { $nin: excludedIds };
-    }
-    const excludedCount = await Contact.countDocuments(blockExcludeMatch).exec();
-
-    return { contacts: matched, excluded: excludedCount };
+    // See: ./campaign/campaign.audience.js
+    return generateAudience(campaign);
   },
 
   /**
@@ -208,78 +148,16 @@ const campaignService = {
    * Returns { total, excluded, contacts: [{ _id, phoneNumber, name }] }
    */
   async previewAudience(ownerId, campaignId) {
-    const campaign = await this.getCampaign(ownerId, campaignId);
-    const Template = (
-      await import("../../models/messaging/template.model.js")
-    ).default;
-    const template = await Template.findById(campaign.template).exec();
-    const { contacts, excluded } = await this.generateAudience(campaign);
-    // sendLimit = how many times each contact gets the message (repeat count)
-    const repeats =
-      campaign.sendLimit && campaign.sendLimit > 0 ? campaign.sendLimit : 1;
-    return {
-      total: contacts.length * repeats,
-      people: contacts.length,
-      sendsPerContact: repeats,
-      excluded,
-      template: template
-        ? { name: template.name, content: template.content }
-        : null,
-      contacts: contacts.map((c) => ({
-        _id: c._id,
-        phoneNumber: c.phoneNumber,
-        name: c.name,
-      })),
-    };
+    // See: ./campaign/campaign.audience.js
+    return previewAudience(this, ownerId, campaignId);
   },
 
   /**
    * Preview a single rendered message for a contact (by contactId or phoneNumber).
    */
   async previewMessage(ownerId, campaignId, identifier) {
-    const campaign = await this.getCampaign(ownerId, campaignId);
-    const Template = (
-      await import("../../models/messaging/template.model.js")
-    ).default;
-    const template = await Template.findById(campaign.template).exec();
-    if (!template) {
-      const e = new Error("Template not found");
-      e.statusCode = 404;
-      throw e;
-    }
-
-    let contact;
-    if (/^[0-9a-fA-F]{24}$/.test(String(identifier))) {
-      contact = await Contact.findOne({ _id: identifier, owner: ownerId })
-        .select("phoneNumber name")
-        .exec();
-    } else {
-      const normalised = normalizePhoneNumber(identifier);
-      if (normalised) {
-        contact = await Contact.findOne({
-          owner: ownerId,
-          phoneNumber: normalised,
-        })
-          .select("phoneNumber name")
-          .exec();
-      }
-    }
-
-    const name = contact?.name || contact?.phoneNumber || "";
-    const variables = { ...(campaign.variables || {}), name };
-    const rendered = renderTemplate(template.content, variables);
-
-    return {
-      template: { name: template.name, content: template.content },
-      contact: contact
-        ? {
-            _id: contact._id,
-            phoneNumber: contact.phoneNumber,
-            name: contact.name,
-          }
-        : null,
-      rendered,
-    };
+    // See: ./campaign/campaign.audience.js
+    return previewMessage(this, ownerId, campaignId, identifier);
   },
 
   /**
@@ -487,111 +365,8 @@ const campaignService = {
    * campaign's template while it is (or was) live.
    */
   async getDevStats(ownerId, campaignId) {
-    const campaign = await this.getCampaign(ownerId, campaignId);
-    const Message = (await import("../../models/messaging/message.model.js"))
-      .default;
-    const templateId = campaign.template?._id || campaign.template;
-    const base = { owner: ownerId, template: templateId, source: "api" };
-    const [sent, failed, queued, perNumber, pipeline] = await Promise.all([
-      Message.countDocuments({
-        ...base,
-        status: { $in: ["sent", "delivered", "read"] },
-      }).exec(),
-      Message.countDocuments({ ...base, status: "failed" }).exec(),
-      Message.countDocuments({
-        ...base,
-        status: { $in: ["queued", "sending", "scheduled", "pending"] },
-      }).exec(),
-      // Per-number breakdown: which numbers got called, how many times and
-      // the status split for each (limit to the most active 100 numbers).
-      // (Aggregate does not auto-cast — ObjectIds must be explicit.)
-      Message.aggregate([
-        {
-          $match: {
-            owner: new mongoose.Types.ObjectId(String(ownerId)),
-            template: new mongoose.Types.ObjectId(String(templateId)),
-            source: "api",
-          },
-        },
-        {
-          $group: {
-            _id: "$to",
-            count: { $sum: 1 },
-            sent: {
-              $sum: {
-                $cond: [
-                  { $in: ["$status", ["sent", "delivered", "read"]] },
-                  1,
-                  0,
-                ],
-              },
-            },
-            failed: {
-              $sum: { $cond: [{ $eq: ["$status", "failed"] }, 1, 0] },
-            },
-            queued: {
-              $sum: {
-                $cond: [
-                  {
-                    $in: ["$status", ["queued", "sending", "scheduled", "pending"]],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-            lastSentAt: { $max: "$sentAt" },
-          },
-        },
-        { $sort: { count: -1 } },
-        { $limit: 100 },
-      ]).exec(),
-      // Individual in-flight messages — queued / sending / scheduled — so the
-      // UI can show exactly what is pending and when it will fire.
-      Message.find({
-        ...base,
-        status: { $in: ["queued", "sending", "scheduled", "pending"] },
-      })
-        .select("to status type scheduledAt sentAt createdAt")
-        .sort({ createdAt: -1 })
-        .limit(50)
-        .exec(),
-    ]);
-
-    const liveSince = campaign.devStats?.liveSince || campaign.startedAt || null;
-    const liveStart = liveSince ? new Date(liveSince).getTime() : null;
-    return {
-      status: campaign.status,
-      scheduledAt: campaign.scheduledAt || null,
-      liveSince,
-      uptimeSeconds:
-        campaign.status === "running" && liveStart
-          ? Math.max(0, Math.floor((Date.now() - liveStart) / 1000))
-          : null,
-      apiCalls: campaign.devStats?.apiCalls || 0,
-      sent,
-      failed,
-      queued,
-      total: sent + failed + queued,
-      uniqueNumbers: perNumber.length,
-      perNumber: perNumber.map((p) => ({
-        number: p._id,
-        count: p.count,
-        sent: p.sent,
-        failed: p.failed,
-        queued: p.queued,
-        lastSentAt: p.lastSentAt || null,
-      })),
-      pipeline: pipeline.map((p) => ({
-        id: p._id,
-        number: p.to,
-        status: p.status,
-        type: p.type,
-        scheduledAt: p.scheduledAt || null,
-        sentAt: p.sentAt || null,
-        createdAt: p.createdAt,
-      })),
-    };
+    // See: ./campaign/campaign.stats.js
+    return getDevStats(this, ownerId, campaignId);
   },
 
   /**

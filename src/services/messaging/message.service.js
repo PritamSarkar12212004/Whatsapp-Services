@@ -5,10 +5,17 @@ import activityService from "./activity.service.js";
 import templateService from "./template.service.js";
 import { normalizePhoneNumber } from "../../utils/messaging/phone.util.js";
 import {
+  normalizeRecipients,
+  assertDevTemplateGate,
+  inferSendType,
+} from "./message/message.helpers.js";
+
+// See: ./message/message.helpers.js (recipient normalize, dev gate, type infer)
+import {
   renderTemplate,
   renderTemplateMedia,
 } from "../../utils/messaging/template.util.js";
-import campaignQueue from "../../queue/campaignQueue.js";
+import campaignQueue from "../../jobs/campaign.queue.js";
 
 const messageService = {
   /**
@@ -20,35 +27,7 @@ const messageService = {
    */
   async sendTransactional(ownerId, payload) {
     const { template, variables = {} } = payload;
-    const to = Array.isArray(payload.to) ? payload.to : [payload.to];
-
-    if (!payload.to) {
-      const e = new Error("Recipient 'to' is required");
-      e.statusCode = 400;
-      throw e;
-    }
-    if (!template) {
-      const e = new Error("Template identifier is required");
-      e.statusCode = 400;
-      throw e;
-    }
-
-    // Normalize every recipient phone number up-front
-    const phoneNumbers = [];
-    for (const raw of to) {
-      const pn = normalizePhoneNumber(raw);
-      if (!pn) {
-        const e = new Error(`Invalid recipient phone number: ${raw}`);
-        e.statusCode = 400;
-        throw e;
-      }
-      if (!phoneNumbers.includes(pn)) phoneNumbers.push(pn);
-    }
-    if (phoneNumbers.length === 0) {
-      const e = new Error("Recipient 'to' is required");
-      e.statusCode = 400;
-      throw e;
-    }
+    const phoneNumbers = normalizeRecipients(payload.to);
 
     // Find template (owner-scoped)
     const tmpl = await templateService.findTemplate(ownerId, template);
@@ -60,50 +39,7 @@ const messageService = {
     //  - campaigns exist but none running -> blocked ("not running")
     //  - at least one queued/running      -> allowed
     if (tmpl.devMode) {
-      const linkedCampaigns = await Campaign.find({
-        owner: ownerId,
-        template: tmpl._id,
-        status: { $ne: "cancelled" },
-      })
-        .select("status")
-        .lean()
-        .exec();
-      if (linkedCampaigns.length === 0) {
-        const e = new Error(
-          "Dev template is not added to any campaign — create a campaign with this template first",
-        );
-        e.statusCode = 400;
-        throw e;
-      }
-      const allPaused = linkedCampaigns.every((c) => c.status === "paused");
-      if (allPaused) {
-        const e = new Error(
-          "Campaign is paused for this template — resume the campaign to enable API sends",
-        );
-        e.statusCode = 400;
-        throw e;
-      }
-      const isRunning = linkedCampaigns.some((c) =>
-        ["queued", "running"].includes(c.status),
-      );
-      if (!isRunning) {
-        const e = new Error(
-          "No running campaign for this template — start the campaign to enable API sends",
-        );
-        e.statusCode = 400;
-        throw e;
-      }
-
-      // The gate passed — count this API call against the linked campaigns
-      // so the dev-campaign live stats can show how many calls came in.
-      await Campaign.updateMany(
-        {
-          owner: ownerId,
-          template: tmpl._id,
-          status: { $ne: "cancelled" },
-        },
-        { $inc: { "devStats.apiCalls": phoneNumbers.length } },
-      ).exec();
+      await assertDevTemplateGate(Campaign, ownerId, tmpl, phoneNumbers.length);
     }
 
     const rendered = renderTemplate(tmpl.content, variables);
@@ -115,22 +51,7 @@ const messageService = {
     // type from the URL extension so the file actually gets sent as media.
     // Extension-less URLs (e.g. gstatic/encrypted image links) fall back to
     // the provided mimeType.
-    let sendType = tmpl.type || "text";
-    if (sendType === "text" && renderedMedia?.url) {
-      const url = String(renderedMedia.url).toLowerCase();
-      if (/\.(jpe?g|png|gif|webp|svg|bmp|ico)(\?|#|$)/.test(url)) sendType = "image";
-      else if (/\.(mp4|webm|mov|mkv)(\?|#|$)/.test(url)) sendType = "video";
-      else if (/\.(mp3|m4a|wav|ogg|aac)(\?|#|$)/.test(url)) sendType = "audio";
-      else if (/\.(pdf|docx?|xlsx?|pptx?|txt|csv)(\?|#|$)/.test(url)) sendType = "document";
-      else {
-        const mt = String(renderedMedia.mimeType || "").toLowerCase();
-        if (mt.startsWith("image/")) sendType = "image";
-        else if (mt.startsWith("video/")) sendType = "video";
-        else if (mt.startsWith("audio/")) sendType = "audio";
-        else if (/pdf|word|excel|powerpoint|officedocument/.test(mt))
-          sendType = "document";
-      }
-    }
+    const sendType = inferSendType(tmpl.type, renderedMedia);
 
     // Scheduled? Future date -> message is created as "scheduled" and the
     // queue auto-starts it when the time arrives.

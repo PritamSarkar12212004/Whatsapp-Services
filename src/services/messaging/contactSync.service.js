@@ -1,3 +1,17 @@
+/**
+ * WhatsApp -> CRM contact synchronization (orchestrator).
+ *
+ * Kept deliberately thin: discovery + normalization + orchestration live
+ * here; the pieces below were extracted for readability:
+ *
+ *   - JID utils / retry policy / constants  -> See: ./contactSync/contactSync.helpers.js
+ *   - MongoDB upsert (identity rules)      -> See: ./contactSync/contactSync.dbSync.js
+ *
+ * TODO(contacts): move the discovery tiers (USync / app-state / session
+ *   registry) into ./contactSync/discovery.js once the in-memory caches are
+ *   moved into that module.
+ */
+
 import { readdir } from "fs/promises";
 import {
   USyncQuery,
@@ -11,10 +25,18 @@ import {
 } from "@whiskeysockets/baileys";
 import Contact from "../../models/messaging/contact.model.js";
 import { normalizePhoneNumber } from "../../utils/messaging/phone.util.js";
-
-const DEFAULT_PAGE = 1;
-const DEFAULT_LIMIT = 20;
-const MAX_LIMIT = 100;
+import {
+  DEFAULT_PAGE,
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+  RETRY_DELAYS_MS,
+  APP_STATE_GRACE_MS,
+  USYNC_TIMEOUT_MS,
+  isPnJid,
+  isLidJid,
+  delay,
+} from "./contactSync/contactSync.helpers.js";
+import { syncWhatsAppContacts } from "./contactSync/contactSync.dbSync.js";
 
 // ---------------------------------------------------------------------------
 // Per-user in-memory caches fed by Baileys events.
@@ -28,6 +50,9 @@ const MAX_LIMIT = 100;
 //   - 'lid-mapping.update'                    → LID -> PN mappings
 // We accumulate these per user so the sync can enrich results with saved
 // names and resolve LID-only identifiers to real phone numbers.
+//
+// TODO(contacts): move these maps into ./contactSync/discovery.js together
+//   with the tier functions that consume them.
 // ---------------------------------------------------------------------------
 const contactCache = new Map(); // userId -> Map<jid, contact>
 const lidToPn = new Map(); // userId -> Map<lidJid, pnJid>
@@ -35,18 +60,16 @@ const activeSyncs = new Map(); // userId -> Promise (coalesce concurrent syncs)
 const lastSyncAt = new Map(); // userId -> timestamp of last completed sync
 const appStateRecoveredSockets = new WeakSet(); // per-socket snapshot guard
 
-const RETRY_DELAYS_MS = [2000, 5000, 10000]; // controlled retry, max 3 attempts
-const APP_STATE_GRACE_MS = 3000; // wait for app-state sync after connection ready
-const USYNC_TIMEOUT_MS = 10000; // the directory query can hang on some accounts
-
-const isPnJid = (jid) => /^\d+@s\.whatsapp\.net$/i.test(jid);
-const isLidJid = (jid) => /^\d+@lid$/i.test(jid);
-
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 // ---------------------------------------------------------------------------
 // Event listeners (registered once per socket)
 // ---------------------------------------------------------------------------
+
+/**
+ * Wire Baileys events into the in-memory contact/LID caches.
+ * Registered once per socket (guarded by a property flag).
+ *
+ * @see contactSync/contactSync.helpers.js for isPnJid/isLidJid
+ */
 const ensureEventListeners = (userId, sock) => {
   if (!sock || sock.__messagingContactSyncListeners) return;
   sock.__messagingContactSyncListeners = true;
@@ -136,6 +159,8 @@ const recoverAppStateContacts = async (userId, sock) => {
 
 // ---------------------------------------------------------------------------
 // Contact discovery (tiered sources)
+//
+// TODO(contacts): extract into ./contactSync/discovery.js
 // ---------------------------------------------------------------------------
 
 /** Tier 1 — USync directory query used by WhatsApp Web's contact picker. */
@@ -387,139 +412,6 @@ const normalizeContactList = (userId, sock, entries) => {
   }
 
   return { contacts, skippedGroups, skippedInvalid, skippedSelf };
-};
-
-// ---------------------------------------------------------------------------
-// MongoDB upsert (bulkWrite, owner + whatsappJid identity)
-// ---------------------------------------------------------------------------
-
-/**
- * Sync WhatsApp contacts into the CRM Contact collection.
- *
- * - Upserts using ownerId + whatsappJid as the unique identity
- * - Preserves existing CRM data: tags, customGroups, customFields, notes,
- *   optOut/isOptedOut, campaign data and manually entered names are never
- *   overwritten. `name` is only filled when it is currently blank.
- * - If a manually created CRM contact already exists with the same phone
- *   number (but no whatsappJid), the sync merges into it instead of creating
- *   a duplicate.
- * - Never deletes contacts that were not returned by a sync.
- *
- * @param {Object} params
- * @param {String} params.ownerId
- * @param {Array}  params.contacts - normalized records from normalizeContactList
- * @param {Boolean} [params.overwrite=false] - reserved; names are never
- *   overwritten to protect manual CRM data
- * @returns {Object} summary
- */
-const syncWhatsAppContacts = async ({ ownerId, contacts, overwrite = false }) => {
-  const summary = {
-    total: Array.isArray(contacts) ? contacts.length : 0,
-    inserted: 0,
-    updated: 0,
-    skippedGroups: 0,
-    skippedInvalid: 0,
-    skippedSelf: 0,
-  };
-
-  if (!Array.isArray(contacts) || !contacts.length) {
-    return summary;
-  }
-
-  const batchSize = 50;
-  let batchIndex = 0;
-
-  while (batchIndex < contacts.length) {
-    const batch = contacts.slice(batchIndex, batchIndex + batchSize);
-
-    const jids = batch.map((c) => c.jid);
-    const phones = batch.map((c) => c.phoneNumber).filter(Boolean);
-
-    // Pre-fetch existing documents (by JID first, then by phone) so we can
-    // decide insert vs update and preserve manual CRM data.
-    const [byJid, byPhone] = await Promise.all([
-      Contact.find({ owner: ownerId, whatsappJid: { $in: jids } })
-        .select("_id whatsappJid phoneNumber name")
-        .lean()
-        .exec(),
-      Contact.find({ owner: ownerId, phoneNumber: { $in: phones } })
-        .select("_id whatsappJid phoneNumber name")
-        .lean()
-        .exec(),
-    ]);
-
-    const jidMap = new Map(byJid.map((d) => [d.whatsappJid, d]));
-    const phoneMap = new Map(byPhone.map((d) => [d.phoneNumber, d]));
-
-    const ops = [];
-    for (const contact of batch) {
-      const jidDoc = jidMap.get(contact.jid);
-      const phoneDoc = phoneMap.get(contact.phoneNumber);
-
-      const now = new Date();
-      const $set = {
-        whatsappJid: contact.jid,
-        phoneNumber: contact.phoneNumber,
-        isBusiness: !!contact.isBusiness,
-        isUnknown: !!contact.isUnknown,
-        isSavedContact: !!contact.isSavedContact,
-        lastSyncedAt: now,
-      };
-      if (contact.pushName) $set.pushName = contact.pushName;
-
-      if (jidDoc) {
-        // Existing WhatsApp-linked contact → update, never touch CRM data.
-        if (!jidDoc.name && contact.name) $set.name = contact.name;
-        ops.push({
-          updateOne: {
-            filter: { _id: jidDoc._id },
-            update: { $set },
-          },
-        });
-      } else if (
-        phoneDoc &&
-        (!phoneDoc.whatsappJid || phoneDoc.whatsappJid === contact.jid)
-      ) {
-        // Manually created CRM contact with the same phone → merge in the
-        // WhatsApp identity, preserving all manually entered fields.
-        if (!phoneDoc.name && contact.name) $set.name = contact.name;
-        ops.push({
-          updateOne: {
-            filter: { _id: phoneDoc._id },
-            update: { $set },
-          },
-        });
-      } else {
-        // New contact → upsert with full WhatsApp metadata on insert.
-        const insertSet = { ...$set };
-        if (contact.name) insertSet.name = contact.name;
-        ops.push({
-          updateOne: {
-            filter: { owner: ownerId, whatsappJid: contact.jid },
-            update: {
-              $set: insertSet,
-              $setOnInsert: { createdAt: now },
-            },
-            upsert: true,
-            // Mongoose 9 otherwise injects every schema default (including
-            // `language: null`) into $setOnInsert — MongoDB's text index on
-            // phoneNumber rejects a non-string `language` override field.
-            setDefaultsOnInsert: false,
-          },
-        });
-      }
-    }
-
-    if (ops.length > 0) {
-      const result = await Contact.bulkWrite(ops, { ordered: false });
-      summary.inserted += result.upsertedCount || 0;
-      summary.updated += result.modifiedCount || 0;
-    }
-
-    batchIndex += batchSize;
-  }
-
-  return summary;
 };
 
 // ---------------------------------------------------------------------------
