@@ -12,6 +12,7 @@ import requestInfo from "./src/middleware/requestInfo.middleware.js";
 import Database from "./src/config/database/database.js";
 import connectWhatsApp from "./src/whatsapp/whatsappConnection.js";
 import { restoreSessions } from "./src/whatsapp/whatsappManager.js";
+import { startAutomationScheduler } from "./src/whatsapp/groupAutomation.service.js";
 import campaignQueue from "./src/queue/campaignQueue.js";
 import route from "./src/routes/index.js";
 
@@ -52,6 +53,7 @@ const start = async () => {
   await Database();
   connectWhatsApp();
   restoreSessions();
+  startAutomationScheduler();
   // Re-enqueue any campaign recipients / messages left queued by a previous
   // process (the queue is in-memory and loses jobs on restart).
   campaignQueue.recoverPendingJobs().catch((err) =>

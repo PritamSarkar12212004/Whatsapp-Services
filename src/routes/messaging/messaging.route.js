@@ -8,6 +8,7 @@ import tagController from "../../controllers/messaging/tag.controller.js";
 import templateController from "../../controllers/messaging/template.controller.js";
 import campaignController from "../../controllers/messaging/campaign.controller.js";
 import messageController from "../../controllers/messaging/message.controller.js";
+import analyticsController from "../../controllers/messaging/analytics.controller.js";
 import { validateContact } from "../../validation/messaging/contact.validation.js";
 import { validateTag } from "../../validation/messaging/tag.validation.js";
 import { validateContactGroup } from "../../validation/messaging/contactGroup.validation.js";
@@ -97,6 +98,12 @@ route.post("/campaigns/:id/pause", validateObjectId("id"), asyncHandler(campaign
 route.post("/campaigns/:id/resume", validateObjectId("id"), asyncHandler(campaignController.resume));
 route.post("/campaigns/:id/cancel", validateObjectId("id"), asyncHandler(campaignController.cancel));
 route.post("/campaigns/:id/unschedule", validateObjectId("id"), asyncHandler(campaignController.unschedule));
+
+// ============================================================================
+// ANALYTICS (dashboard)
+// ============================================================================
+
+route.get("/analytics", asyncHandler(analyticsController.getAnalytics));
 
 // ============================================================================
 // MESSAGES (external transactional API)

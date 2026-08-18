@@ -7,6 +7,7 @@ import { Browsers } from "@whiskeysockets/baileys/lib/Utils/browser-utils.js";
 import path from "path";
 import chalk from "chalk";
 import clearAuthState from "./clearAuthState.js";
+import { setupGroupAutomation } from "./groupAutomation.service.js";
 import whatsappConnectionLog from "../logs/connections/whatsappConnectionLog.js";
 import WhatsAppSession from "../models/whatsapp/whatsappSession.model.js";
 import contactSyncService from "../services/messaging/contactSync.service.js";
@@ -293,6 +294,9 @@ const initializeSocket = async (userId, session) => {
       ),
     );
   });
+
+  // Group automation engine (moderation, auto-reply, commands, welcome/goodbye).
+  setupGroupAutomation(sock, userId);
 
   return sock;
 };
