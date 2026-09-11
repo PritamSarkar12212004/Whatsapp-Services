@@ -8,7 +8,6 @@ import initLoaders from "./src/loaders/index.js";
 const PORT = process.env.PORT || 8080;
 
 const start = async () => {
-  // Database -> WhatsApp sessions -> queue recovery (in order)
   await initLoaders();
 
   const app = createApp();
