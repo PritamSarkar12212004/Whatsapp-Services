@@ -15,8 +15,6 @@ const createApp = () => {
   app.use(
     cors({
       origin: function (origin, callback) {
-        // Allow requests with no Origin header (curl, Postman, same-origin)
-        // and every allowed origin below.
         if (
           !origin ||
           ["https://whatsapp-services-frontend.vercel.app"].includes(origin) ||
@@ -28,8 +26,6 @@ const createApp = () => {
         return callback(null, false);
       },
       methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-      // ngrok-skip-browser-warning frontend se aata hai (ngrok warning page
-      // bypass karne ke liye) — isliye preflight me allow karna zaroori hai.
       allowedHeaders: [
         "Content-Type",
         "Authorization",
