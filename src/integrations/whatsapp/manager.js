@@ -11,6 +11,7 @@ import { setupGroupAutomation } from "./groupAutomation.service.js";
 import whatsappConnectionLog from "../../logs/connections/whatsappConnectionLog.js";
 import WhatsAppSession from "../../models/whatsapp/whatsappSession.model.js";
 import contactSyncService from "../../services/messaging/contactSync.service.js";
+import { applyReceipts } from "./receipts.js";
 
 const AUTH_BASE_FOLDER = path.join(
   path.resolve(),
@@ -364,6 +365,19 @@ const initializeSocket = async (userId, session) => {
         `[Baileys] 📩 New message from ${sender} for user ${userId}`,
       ),
     );
+  });
+
+  // Delivery / read receipts → advance Message + CampaignRecipient statuses so
+  // the dashboard's Delivered / Read counters and rates reflect reality.
+  sock.ev.on("messages.update", async (updates) => {
+    try {
+      await applyReceipts(userId, updates);
+    } catch (err) {
+      console.error(
+        `[Baileys] receipt handler error for user ${userId}:`,
+        err.message,
+      );
+    }
   });
 
   // Group automation engine (moderation, auto-reply, commands, welcome/goodbye).
