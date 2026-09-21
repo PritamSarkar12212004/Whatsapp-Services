@@ -350,13 +350,13 @@ const _sendCampaignRecipient = async (job) => {
 
   // Load the template's media/type when the job does not carry it yet
   // (e.g. jobs recovered after a restart).
-  if (!job.templateMedia) {
+  if (!job.templateMedia || !job.templateType) {
     const camp = await Campaign.findById(job.campaignId)
       .populate("template", "type media")
       .exec();
     if (camp?.template) {
-      job.templateType = camp.template.type || "text";
-      job.templateMedia = camp.template.media || null;
+      job.templateType = camp.template.type || job.templateType || "text";
+      job.templateMedia = camp.template.media || job.templateMedia || null;
     }
   }
 
@@ -385,9 +385,12 @@ const _sendCampaignRecipient = async (job) => {
       contact: recipient.contact,
       campaign: job.campaignId,
       direction: "outbound",
-      type: "text",
+      // Record the template's real media type (was hardcoded to "text",
+      // which made the dashboard's "Message types" chart always show Text).
+      type: job.templateType || "text",
       content: recipient.renderedMessage,
       to: recipient.phoneNumber,
+      media: media || null,
       whatsappMessageId: result.messageId,
       status: "sent",
       sentAt: new Date(),

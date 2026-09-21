@@ -204,7 +204,23 @@ const analyticsController = {
         cancelled: "Cancelled",
         skipped: "Skipped",
       };
-      const statusBreakdown = Object.entries(statusMap)
+
+      // A fresh account (or one driven only by campaigns) may have no `Message`
+      // rows yet, which used to leave this donut permanently empty. Campaign
+      // recipients always exist once a campaign has run, so fall back to their
+      // delivery statuses to keep showing real activity.
+      let statusSource = statusMap;
+      if (!statusMap.size && ownedCampaignIds.length) {
+        const recipientStatusCounts = await CampaignRecipient.aggregate([
+          { $match: { campaign: { $in: ownedCampaignIds } } },
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ]);
+        statusSource = new Map(
+          recipientStatusCounts.map((r) => [r._id, r.count]),
+        );
+      }
+
+      const statusBreakdown = Object.entries(Object.fromEntries(statusSource))
         .filter(([key]) => statusLabels[key])
         .map(([key, value]) => ({ name: statusLabels[key], value }))
         .sort((a, b) => b.value - a.value);
@@ -263,7 +279,52 @@ const analyticsController = {
         location: "Location",
         contact: "Contact",
       };
-      const messageTypes = Object.entries(typeMap)
+
+      // Same fallback as the status donut: when no `Message` rows exist yet,
+      // derive the content mix from the templates behind this owner's
+      // campaigns, weighted by what each campaign actually sent.
+      let typeSource = typeMap;
+      if (!typeMap.size) {
+        const campaignsForTypes = await Campaign.find({
+          owner: ownerObjectId,
+        })
+          .select("template statistics")
+          .populate("template", "type")
+          .lean();
+
+        const recipientsByCampaign = ownedCampaignIds.length
+          ? await CampaignRecipient.aggregate([
+              { $match: { campaign: { $in: ownedCampaignIds } } },
+              { $group: { _id: "$campaign", count: { $sum: 1 } } },
+            ])
+          : [];
+        const recipientsMap = new Map(
+          recipientsByCampaign.map((r) => [String(r._id), r.count]),
+        );
+
+        const derived = new Map();
+        for (const c of campaignsForTypes) {
+          const templateType = c.template?.type || "text";
+          const weight =
+            c.statistics?.sent || recipientsMap.get(String(c._id)) || 0;
+          if (weight > 0) {
+            derived.set(templateType, (derived.get(templateType) || 0) + weight);
+          }
+        }
+
+        // Nothing sent or queued yet — still show what the account is set up to
+        // send rather than an empty chart.
+        if (!derived.size) {
+          for (const c of campaignsForTypes) {
+            const templateType = c.template?.type || "text";
+            derived.set(templateType, (derived.get(templateType) || 0) + 1);
+          }
+        }
+
+        typeSource = derived;
+      }
+
+      const messageTypes = Object.entries(Object.fromEntries(typeSource))
         .map(([key, value]) => ({ name: typeLabels[key] || key, value }))
         .sort((a, b) => b.value - a.value);
 
