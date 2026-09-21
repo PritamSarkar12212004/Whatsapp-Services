@@ -21,6 +21,7 @@ import {
   withinWorkingHours,
   resolveDelayMs,
   buildReplyPayload,
+  replyOptions,
 } from "./botRuntime.helpers.js";
 
 // ==================== STATE ====================
@@ -95,9 +96,9 @@ const bumpStats = async (botId, inc, extra = {}) => {
   }
 };
 
-const send = async (sock, groupJid, payload) => {
+const send = async (sock, groupJid, payload, options) => {
   try {
-    await sock.sendMessage(groupJid, payload);
+    await sock.sendMessage(groupJid, payload, options);
     return true;
   } catch (err) {
     console.error(chalk.yellow(`[Bot] Send failed: ${err.message}`));
@@ -125,8 +126,16 @@ const preSend = async (sock, groupJid, bot, msgKey) => {
 
 // ==================== MESSAGE HANDLING ====================
 
-const botReplies = async (sock, bot, groupJid, senderName, trigger, text) => {
-  const reply = applyVars(trigger.reply, {
+const botReplies = async (
+  sock,
+  bot,
+  groupJid,
+  senderName,
+  trigger,
+  text,
+  msgKey,
+) => {
+  const vars = {
     name: senderName,
     message: text,
     bot: bot.name,
@@ -136,10 +145,20 @@ const botReplies = async (sock, bot, groupJid, senderName, trigger, text) => {
       minute: "2-digit",
     }),
     date: new Date().toLocaleDateString("en-IN"),
-  });
+  };
 
-  const payload = buildReplyPayload(reply, trigger.mediaType, trigger.mediaUrl);
-  const sent = await send(sock, groupJid, payload);
+  const reply = applyVars(trigger.reply, vars);
+  // Media URLs accept variables too, so one rule can send per-person files.
+  const mediaUrl = trigger.mediaUrl ? applyVars(trigger.mediaUrl, vars) : null;
+
+  const payload = buildReplyPayload(reply, trigger.mediaType, mediaUrl);
+  // `quoted` rules answer the exact message the person sent (swipe-to-reply).
+  const sent = await send(
+    sock,
+    groupJid,
+    payload,
+    replyOptions(trigger.quoted, msgKey),
+  );
 
   if (sent) {
     const inc = { "stats.replied": 1 };
@@ -221,6 +240,7 @@ const runBot = async (sock, bot, ctx) => {
     senderName,
     trigger,
     text,
+    msgKey,
   );
 
   if (replied) {
@@ -325,6 +345,7 @@ export const simulateBotMessage = (bot, text, senderName = "Test user") => {
       value: trigger.value,
     },
     reply: applyVars(trigger.reply, { name: senderName, message: text, bot: bot.name }),
+    quoted: !!trigger.quoted,
     mediaType: trigger.mediaType || "text",
     mediaUrl: trigger.mediaUrl || null,
     delayMs: resolveDelayMs(bot.behavior, trigger),

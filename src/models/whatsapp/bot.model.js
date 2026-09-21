@@ -57,6 +57,9 @@ const triggerSchema = new mongoose.Schema(
       default: "text",
     },
     mediaUrl: { type: String, default: null },
+    // Reply as a quoted answer to the matched message (swipe-to-reply style)
+    // instead of a plain message in the group.
+    quoted: { type: Boolean, default: false },
     // Guard rails
     enabled: { type: Boolean, default: true },
     priority: { type: Number, default: 100 }, // lower = checked first

@@ -78,6 +78,7 @@ const sanitizeTrigger = (t = {}) => ({
   reply: String(t.reply ?? "").slice(0, 4000),
   mediaType: MEDIA_TYPES.includes(t.mediaType) ? t.mediaType : "text",
   mediaUrl: t.mediaUrl ? String(t.mediaUrl).slice(0, 1000) : null,
+  quoted: Boolean(t.quoted),
   enabled: t.enabled !== false,
   priority: clampNumber(t.priority, 1, 999, 100),
   delayMs: clampNumber(t.delayMs, 0, 60000, 0),

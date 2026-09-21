@@ -144,6 +144,15 @@ export const resolveDelayMs = (behavior = {}, trigger = null) => {
  * Location/contact need coordinates/a vCard, so they fall back to the text
  * reply instead of sending something broken.
  */
+/**
+ * Options for a reply: a rule can quote the message it answers, which reads
+ * like swipe-to-reply inside the group.
+ *
+ * @returns {Object|undefined} third argument for sock.sendMessage
+ */
+export const replyOptions = (quoted, msgKey) =>
+  quoted && msgKey ? { quoted: msgKey } : undefined;
+
 export const buildReplyPayload = (reply, mediaType = "text", mediaUrl = null) => {
   const text = String(reply ?? "");
   const url = mediaUrl ? String(mediaUrl) : null;
