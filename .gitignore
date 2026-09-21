@@ -1,3 +1,8 @@
 node_modules/
 .env
 *.log
+
+# WhatsApp/Baileys auth state — contains live account credentials.
+# Auth state is now persisted in MongoDB instead (src/integrations/whatsapp/authState.js),
+# so nothing here needs to be committed. Never commit these files.
+src/whatsapp/auth_info_baileys/

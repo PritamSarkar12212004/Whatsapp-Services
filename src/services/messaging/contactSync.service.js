@@ -37,6 +37,7 @@ import {
   delay,
 } from "./contactSync/contactSync.helpers.js";
 import { syncWhatsAppContacts } from "./contactSync/contactSync.dbSync.js";
+import { listAuthKeyIds } from "../../integrations/whatsapp/authState.js";
 
 // ---------------------------------------------------------------------------
 // Per-user in-memory caches fed by Baileys events.
@@ -239,32 +240,62 @@ const fetchAppStateCacheContacts = (userId) => {
  * These are genuine contacts recorded by the Baileys session itself — not
  * fabricated from arbitrary message JIDs.
  */
+/**
+ * Tier 3 — persisted session contact registry. The Baileys signal repository
+ * records a `lid-mapping` entry for every real phone number the account has
+ * communicated with (device keys, sessions, LID↔PN pairs). These are genuine
+ * contacts recorded by the session itself — not fabricated from message JIDs.
+ *
+ * Primary source is MongoDB (see integrations/whatsapp/authState.js), because
+ * the deployed filesystem is ephemeral and the on-disk auth folder is wiped on
+ * every restart/redeploy. The folder is still read as a legacy fallback for
+ * local runs that have not been migrated yet.
+ */
 const fetchSessionRegistryContacts = async (userId, authFolder) => {
-  if (!authFolder) return null;
+  const entries = [];
+
+  const pushNumber = (digits) => {
+    if (!digits || digits.length < 7) return; // guard against odd keys
+    entries.push({
+      jid: `${digits}@s.whatsapp.net`,
+      inAddressBook: false,
+      lid: null,
+      status: null,
+    });
+  };
+
+  // Primary: MongoDB-backed auth state.
   try {
-    const files = await readdir(authFolder);
-    const entries = [];
-    for (const file of files) {
-      const match = file.match(/^lid-mapping-(\d+)\.json$/);
-      if (!match) continue;
-      const digits = match[1];
-      if (!digits || digits.length < 7) continue; // guard against odd keys
-      entries.push({
-        jid: `${digits}@s.whatsapp.net`,
-        inAddressBook: false,
-        lid: null,
-        status: null,
-      });
+    const keyIds = await listAuthKeyIds(userId, "lid-mapping");
+    for (const keyId of keyIds) {
+      // Only forward PN→LID mappings (numeric); skip `reverse` & LID keys.
+      if (/^\d+$/.test(keyId)) pushNumber(keyId);
     }
-    return entries.length
-      ? { source: "session contact registry (lid-mapping)", entries }
-      : null;
   } catch (err) {
     console.error(
-      `[Contacts Sync] Session contact registry read failed: ${err.message}`,
+      `[Contacts Sync] Session contact registry (MongoDB) read failed: ${err.message}`,
     );
-    return null;
   }
+
+  // Legacy fallback: on-disk `lid-mapping-<pn>.json` files.
+  if (!entries.length && authFolder) {
+    try {
+      const files = await readdir(authFolder);
+      for (const file of files) {
+        const match = file.match(/^lid-mapping-(\d+)\.json$/);
+        if (!match) continue;
+        pushNumber(match[1]);
+      }
+    } catch (err) {
+      console.error(
+        `[Contacts Sync] Session contact registry read failed: ${err.message}`,
+      );
+    }
+  }
+
+  return entries.length
+    ? { source: "session contact registry (lid-mapping)", entries }
+    : null;
 };
 
 /**

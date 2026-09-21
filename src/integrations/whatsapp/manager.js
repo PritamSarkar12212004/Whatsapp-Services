@@ -1,5 +1,4 @@
 import makeWASocket, {
-  useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
 } from "@whiskeysockets/baileys";
@@ -7,6 +6,7 @@ import { Browsers } from "@whiskeysockets/baileys/lib/Utils/browser-utils.js";
 import path from "path";
 import chalk from "chalk";
 import clearAuthState from "./clearAuthState.js";
+import { useMongoAuthState } from "./authState.js";
 import { setupGroupAutomation } from "./groupAutomation.service.js";
 import whatsappConnectionLog from "../../logs/connections/whatsappConnectionLog.js";
 import WhatsAppSession from "../../models/whatsapp/whatsappSession.model.js";
@@ -23,6 +23,13 @@ const AUTH_BASE_FOLDER = path.join(
  */
 const sessions = new Map();
 
+/**
+ * 440 = connectionReplaced: another socket is using the same credentials,
+ * usually our own duplicate after a fast restart. Retrying is safe, but only
+ * a bounded number of times so we never loop forever.
+ */
+const MAX_CONFLICT_RETRIES = 3;
+
 const getAuthFolder = (userId) => path.join(AUTH_BASE_FOLDER, userId);
 
 const getSession = (userId) => sessions.get(userId);
@@ -36,6 +43,7 @@ const createSession = (userId) => {
     status: "disconnected",
     reconnecting: false,
     retryCount: 0,
+    conflictRetries: 0,
     reconnectTimer: null,
     initializationPromise: null,
     disconnecting: false,
@@ -110,8 +118,42 @@ const initializeSocket = async (userId, session) => {
     chalk.cyan(`[Baileys] Initializing WhatsApp connection for user ${userId}...`),
   );
 
-  const authFolder = getAuthFolder(userId);
-  const { state, saveCreds } = await useMultiFileAuthState(authFolder);
+  // Auth state lives in MongoDB, NOT on disk — see ./authState.js. The
+  // deployed filesystem is ephemeral (Render free plan spins the container
+  // down and wipes it), so creds kept as files meant a fresh QR scan every
+  // time the service restarted or redeployed.
+  let state, saveCreds;
+  try {
+    ({ state, saveCreds } = await useMongoAuthState(userId));
+  } catch (err) {
+    console.error(
+      chalk.red(
+        `[Baileys] Failed to load auth state for user ${userId}: ${err.message}`,
+      ),
+    );
+    session.status = "error";
+    await updateDbStatus(userId, "error");
+    return null;
+  }
+
+  // A paired device normally has `registered: true`, but some sessions keep
+  // `registered: false` while still carrying a valid `me.id` — the device IS
+  // linked in that case. Only warn when there is no linked identity at all.
+  const linkedIdentity = state?.creds?.me?.id;
+  if (linkedIdentity) {
+    console.log(
+      chalk.cyan(
+        `[Baileys] Loaded existing WhatsApp identity for user ${userId} ` +
+          `(${String(linkedIdentity).split(":")[0]}) — no QR scan needed`,
+      ),
+    );
+  } else {
+    console.log(
+      chalk.yellow(
+        `[Baileys] No linked WhatsApp identity for user ${userId} — a QR scan is required`,
+      ),
+    );
+  }
 
   // Check if session was disconnected during initialization
   if (session.disconnecting) {
@@ -215,23 +257,48 @@ const initializeSocket = async (userId, session) => {
         await updateDbStatus(userId, "logged_out", {
           lastDisconnectedAt: new Date(),
         });
-        clearAuthState(userId);
+        await clearAuthState(userId);
         sessions.delete(userId);
         return;
       }
 
-      // Conflict / replaced (440) → prevent duplicate socket creation
+      // Conflict / replaced (440 = connectionReplaced) → another socket is
+      // using the same credentials, which is normally our own duplicate right
+      // after a restart or a retry. Giving up here killed the session forever
+      // and left the UI stuck, so retry with backoff instead of dying.
       if (statusCode === 440) {
-        console.log(
-          chalk.yellow(
-            "[Baileys] Conflict detected - preventing duplicate socket creation",
-          ),
-        );
         session.socket = null;
         session.status = "disconnected";
+        session.conflictRetries = (session.conflictRetries || 0) + 1;
+
         await updateDbStatus(userId, "disconnected", {
           lastDisconnectedAt: new Date(),
         });
+
+        if (
+          session.conflictRetries <= MAX_CONFLICT_RETRIES &&
+          !session.reconnecting
+        ) {
+          const retryDelay = 5000 * session.conflictRetries;
+          console.log(
+            chalk.yellow(
+              `[Baileys] Conflict (440) for user ${userId} — retrying in ${retryDelay}ms ` +
+                `(attempt ${session.conflictRetries}/${MAX_CONFLICT_RETRIES})`,
+            ),
+          );
+          session.reconnecting = true;
+          session.reconnectTimer = setTimeout(() => {
+            session.reconnecting = false;
+            connect(userId);
+          }, retryDelay);
+        } else {
+          console.log(
+            chalk.red(
+              `[Baileys] Conflict (440) persisted for user ${userId} — stopping retries`,
+            ),
+          );
+          session.conflictRetries = 0;
+        }
         return;
       }
 
@@ -262,6 +329,7 @@ const initializeSocket = async (userId, session) => {
     } else if (connection === "open") {
       session.status = "connected";
       session.retryCount = 0;
+      session.conflictRetries = 0;
       const phone = sock.user?.id?.split(":")[0] || "Unknown";
       console.log(
         chalk.green(
@@ -424,8 +492,8 @@ const logout = async (userId) => {
     session.reconnectTimer = null;
   }
 
-  // Always delete local auth state → next connect requires a QR scan.
-  clearAuthState(userId);
+  // Always delete the auth state → next connect requires a QR scan.
+  await clearAuthState(userId);
 
   if (session) {
     session.socket = null;
@@ -473,6 +541,34 @@ const restoreSessions = async () => {
   }
 };
 
+/**
+ * Gracefully end every active socket.
+ * Called on process shutdown so WhatsApp sees a clean disconnect instead of a
+ * dropped connection (and so no reconnect timer fires while we are exiting).
+ */
+const shutdownAll = async () => {
+  for (const [userId, session] of sessions.entries()) {
+    if (session.reconnectTimer) {
+      clearTimeout(session.reconnectTimer);
+      session.reconnectTimer = null;
+    }
+
+    // Both flags prevent the close handler below from scheduling a reconnect.
+    session.disconnecting = true;
+    session.reconnecting = true;
+
+    try {
+      session.socket?.end();
+    } catch (_) {
+      /* socket already gone */
+    }
+
+    session.socket = null;
+    session.status = "disconnected";
+    console.log(chalk.blue(`[Baileys] Closed socket for user ${userId}`));
+  }
+};
+
 export {
   connect,
   getSocket,
@@ -483,4 +579,5 @@ export {
   restoreSessions,
   getSession,
   triggerContactSync,
+  shutdownAll,
 };

@@ -1,13 +1,12 @@
 import makeWASocket, {
-  useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
 } from "@whiskeysockets/baileys";
 import { Browsers } from "@whiskeysockets/baileys/lib/Utils/browser-utils.js";
 import qrcode from "qrcode-terminal";
-import path from "path";
 import chalk from "chalk";
 import clearAuthState from "./clearAuthState.js";
+import { useMongoAuthState, SYSTEM_OWNER_KEY } from "./authState.js";
 import whatsappConnectionLog from "../../logs/connections/whatsappConnectionLog.js";
 
 let sock = null;
@@ -15,11 +14,6 @@ let retryCount = 0;
 let reconnecting = false;
 let initializationPromise = null;
 const MAX_RETRIES = 5;
-
-const AUTH_FOLDER = path.join(
-  path.resolve(),
-  "src/whatsapp/auth_info_baileys",
-);
 
 /**
  * System-level WhatsApp connection used for sending authentication OTPs.
@@ -65,7 +59,9 @@ const initializeSocket = async () => {
 
   console.log(chalk.cyan("[Baileys] Initializing WhatsApp connection..."));
 
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+  // Auth state lives in MongoDB (see ./authState.js) so the OTP gateway
+  // session survives container restarts / redeploys / free-plan spin-downs.
+  const { state, saveCreds } = await useMongoAuthState(SYSTEM_OWNER_KEY);
   let version;
 
   try {
@@ -119,7 +115,7 @@ const initializeSocket = async () => {
       // Permanent logout → clean up, do NOT reconnect
       if (statusCode === DisconnectReason.loggedOut) {
         console.log(chalk.red(whatsappConnectionLog.WARNING.AUTH_REJECTED));
-        clearAuthState();
+        await clearAuthState();
         sock = null;
         retryCount = 0;
         reconnecting = false;
@@ -139,13 +135,29 @@ const initializeSocket = async () => {
         return;
       }
 
-      if (statusCode === 405 || statusCode === 401) {
+      // Baileys treats 401/403/419 as unrecoverable auth failures
+      // (UNAUTHORIZED_CODES). 401 is already handled above as loggedOut, so
+      // this adds 403.
+      //
+      // NOTE: this branch used to also match 405. 405 is NOT a WhatsApp auth
+      // code — it is a transient stream/handshake error — so a single 405 used
+      // to delete the credentials and force an unnecessary QR scan. It now
+      // falls through to the normal retry path below.
+      if (statusCode === 403 || statusCode === 419) {
         console.log(chalk.red(whatsappConnectionLog.WARNING.AUTH_REJECTED));
-        clearAuthState();
+        await clearAuthState();
         sock = null;
         retryCount = 0;
         reconnecting = false;
         return;
+      }
+
+      if (statusCode === 405) {
+        console.log(
+          chalk.yellow(
+            "[Baileys] Stream error 405 — treating as transient, retrying",
+          ),
+        );
       }
 
       // Temporary disconnects → controlled reconnect
@@ -204,4 +216,21 @@ const initializeSocket = async () => {
 };
 
 export const getClient = () => sock;
+
+/**
+ * Gracefully end the system (OTP gateway) socket on process shutdown.
+ * The close handler is suppressed so no reconnect is scheduled while exiting.
+ */
+export const closeClient = () => {
+  if (sock) {
+    try {
+      sock.end();
+    } catch (_) {
+      /* socket already gone */
+    }
+    sock = null;
+  }
+  reconnecting = true; // block the close handler from scheduling a reconnect
+};
+
 export default whatsappConnect;
