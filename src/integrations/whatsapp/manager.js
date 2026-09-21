@@ -31,6 +31,29 @@ const sessions = new Map();
  */
 const MAX_CONFLICT_RETRIES = 3;
 
+/**
+ * How long a socket may sit in "connecting" without producing a QR or opening
+ * before we consider it dead and rebuild it. The QR normally arrives within a
+ * couple of seconds, so 30s means "something is wrong", not "slow network".
+ */
+const STUCK_CONNECT_MS = 30000;
+
+/** Bounded self-healing — never restart the same socket forever. */
+const MAX_STUCK_RECOVERIES = 2;
+
+/** Resolve/reject a promise that must not hang forever. */
+const withTimeout = (ms, promise, label) =>
+  Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => {
+      const t = setTimeout(
+        () => reject(new Error(`${label} timed out after ${ms}ms`)),
+        ms,
+      );
+      t.unref?.();
+    }),
+  ]);
+
 const getAuthFolder = (userId) => path.join(AUTH_BASE_FOLDER, userId);
 
 const getSession = (userId) => sessions.get(userId);
@@ -50,9 +73,96 @@ const createSession = (userId) => {
     disconnecting: false,
     contactSyncScheduled: false,
     initialSyncDone: false,
+    connectingSince: null,
+    stuckTimer: null,
+    stuckRecoveries: 0,
+    generation: 0,
   };
   sessions.set(userId, session);
   return session;
+};
+
+/** Stop the stuck-socket watchdog for a session. */
+const clearStuckWatchdog = (session) => {
+  if (session?.stuckTimer) {
+    clearTimeout(session.stuckTimer);
+    session.stuckTimer = null;
+  }
+};
+
+/**
+ * A socket that neither produces a QR nor opens leaves the whole app gated
+ * behind "Connecting to WhatsApp…" with nothing to advance the state machine.
+ * After STUCK_CONNECT_MS we rebuild the socket, and if that keeps failing we
+ * fall back to "disconnected" so the UI offers a Retry instead of spinning.
+ */
+const armStuckWatchdog = (userId, session) => {
+  clearStuckWatchdog(session);
+
+  const timer = setTimeout(async () => {
+    session.stuckTimer = null;
+
+    // QR / open / close always clear this timer first — reaching here means the
+    // attempt never got past "connecting".
+    if (session.status !== "connecting" || session.socket?.user) return;
+
+    session.stuckRecoveries = (session.stuckRecoveries || 0) + 1;
+
+    if (session.stuckRecoveries > MAX_STUCK_RECOVERIES) {
+      console.error(
+        chalk.red(
+          `[Baileys] Connection stuck for user ${userId} after ${MAX_STUCK_RECOVERIES} restarts — handing control back to the client`,
+        ),
+      );
+      session.socket = null;
+      session.qr = null;
+      session.status = "disconnected";
+      await updateDbStatus(userId, "disconnected", {
+        lastDisconnectedAt: new Date(),
+      });
+      return;
+    }
+
+    console.log(
+      chalk.yellow(
+        `[Baileys] Connection stuck in "connecting" for user ${userId} — restarting socket (attempt ${session.stuckRecoveries}/${MAX_STUCK_RECOVERIES})`,
+      ),
+    );
+    await connect(userId, { force: true });
+  }, STUCK_CONNECT_MS);
+
+  // Never keep the process alive just for this timer.
+  timer.unref?.();
+  session.stuckTimer = timer;
+};
+
+/**
+ * Tear down a session's socket + timers so a fresh one can be built from the
+ * same credentials (forces a new QR request with WhatsApp).
+ */
+const teardownSocket = (session) => {
+  if (!session) return;
+  clearStuckWatchdog(session);
+
+  if (session.reconnectTimer) {
+    clearTimeout(session.reconnectTimer);
+    session.reconnectTimer = null;
+  }
+
+  try {
+    session.socket?.end(undefined);
+  } catch (_) {
+    /* socket already gone */
+  }
+
+  session.socket = null;
+  session.qr = null;
+  session.reconnecting = false;
+  session.connectingSince = null;
+  // Bump the generation so a still-running initializeSocket() for the old
+  // socket notices it was superseded and bails out instead of hijacking the
+  // session when it finally resolves.
+  session.generation = (session.generation || 0) + 1;
 };
 
 const updateDbStatus = async (userId, status, extra = {}) => {
@@ -67,8 +177,25 @@ const updateDbStatus = async (userId, status, extra = {}) => {
   }
 };
 
-const connect = async (userId) => {
+/**
+ * Connect (or reuse) a user's WhatsApp socket.
+ *
+ * @param {String}  userId
+ * @param {Object}  [options]
+ * @param {Boolean} [options.force] Rebuild the socket even when one already
+ *   exists. Used by the client's "Reconnect" button and by the stuck-socket
+ *   watchdog — a socket wedged in "connecting" can only be cleared this way.
+ */
+const connect = async (userId, { force = false } = {}) => {
   let session = sessions.get(userId);
+
+  if (force && session) {
+    console.log(
+      chalk.yellow(`[Baileys] Forcing a fresh socket for user ${userId}`),
+    );
+    teardownSocket(session);
+    session.status = "disconnected";
+  }
 
   // Socket exists and is not disconnected (connecting, qr_required, connected) → reuse
   if (session && session.socket && session.status !== "disconnected") {
@@ -107,6 +234,12 @@ const connect = async (userId) => {
 //   wiring. Split into ./socket/initialize.js + ./socket/eventHandlers.js
 //   when a unit-test seam is introduced (the handlers close over session).
 const initializeSocket = async (userId, session) => {
+  // Every init owns a generation number. If the session is torn down and
+  // rebuilt while we are waiting on Mongo/WhatsApp, this run must not touch the
+  // session any more (otherwise a slow init would overwrite the fresh socket).
+  const generation = session.generation || 0;
+  const superseded = () => (session.generation || 0) !== generation;
+
   // Clean up old socket if exists
   if (session.socket) {
     try {
@@ -157,7 +290,7 @@ const initializeSocket = async (userId, session) => {
   }
 
   // Check if session was disconnected during initialization
-  if (session.disconnecting) {
+  if (session.disconnecting || superseded()) {
     console.log(
       chalk.yellow(
         `[Baileys] Session for user ${userId} was disconnected during initialization`,
@@ -170,7 +303,13 @@ const initializeSocket = async (userId, session) => {
 
   let version;
   try {
-    const { version: fetchedVersion } = await fetchLatestBaileysVersion();
+    // Never let the version lookup stall the connect — without a timeout a slow
+    // WhatsApp response left the session stuck before a socket even existed.
+    const { version: fetchedVersion } = await withTimeout(
+      8000,
+      fetchLatestBaileysVersion(),
+      "fetchLatestBaileysVersion",
+    );
     version = fetchedVersion;
     console.log(
       chalk.cyan(
@@ -183,15 +322,26 @@ const initializeSocket = async (userId, session) => {
     );
   }
 
+  if (session.disconnecting || superseded()) return null;
+
   const sock = makeWASocket({
     auth: state,
     browser: Browsers.windows("Chrome"),
+    // Explicit timeouts so a dead handshake fails fast instead of hanging the
+    // Session Manager in "connecting" forever (the UI has nothing to show
+    // until a QR or an open/close event arrives).
+    connectTimeoutMs: 20000,
+    keepAliveIntervalMs: 15000,
+    defaultQueryTimeoutMs: 30000,
+    retryRequestDelayMs: 500,
     ...(version && { version }),
   });
 
   session.socket = sock;
   session.status = "connecting";
+  session.connectingSince = Date.now();
   await updateDbStatus(userId, "connecting");
+  armStuckWatchdog(userId, session);
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -229,6 +379,9 @@ const initializeSocket = async (userId, session) => {
       session.qr = qr;
       session.status = "qr_required";
       session.retryCount = 0;
+      // The socket is alive — stop treating this attempt as stuck.
+      session.connectingSince = null;
+      clearStuckWatchdog(session);
       console.log(
         chalk.cyan(`[Baileys] QR generated for user ${userId}`),
       );
@@ -238,6 +391,8 @@ const initializeSocket = async (userId, session) => {
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       session.qr = null;
+      session.connectingSince = null;
+      clearStuckWatchdog(session);
       session.contactSyncScheduled = false;
       session.initialSyncDone = false;
       contactSyncService.clearUserCache(userId);
@@ -331,6 +486,9 @@ const initializeSocket = async (userId, session) => {
       session.status = "connected";
       session.retryCount = 0;
       session.conflictRetries = 0;
+      session.stuckRecoveries = 0;
+      session.connectingSince = null;
+      clearStuckWatchdog(session);
       const phone = sock.user?.id?.split(":")[0] || "Unknown";
       console.log(
         chalk.green(
@@ -442,6 +600,11 @@ const getStatus = (userId) => {
     connected: session.status === "connected",
     status: session.status,
     phoneNumber: session.socket?.user?.id?.split(":")[0] || null,
+    // How long the session has been stuck in "connecting" (ms) — lets the
+    // client (and the connect controller) tell "starting up" from "stuck".
+    connectingFor: session.connectingSince
+      ? Date.now() - session.connectingSince
+      : null,
   };
 };
 
@@ -457,6 +620,10 @@ const disconnect = async (userId) => {
 
   // Mark as disconnecting to prevent orphaned sockets during init
   session.disconnecting = true;
+
+  // Clear the stuck-socket watchdog
+  clearStuckWatchdog(session);
+  session.connectingSince = null;
 
   // Clear reconnect timer
   if (session.reconnectTimer) {
@@ -491,6 +658,13 @@ const disconnect = async (userId) => {
  */
 const logout = async (userId) => {
   const session = sessions.get(userId);
+
+  // A logout must also kill the stuck-socket watchdog and any in-flight init.
+  clearStuckWatchdog(session);
+  if (session) {
+    session.connectingSince = null;
+    session.generation = (session.generation || 0) + 1;
+  }
 
   if (session?.socket) {
     try {
@@ -575,6 +749,8 @@ const restoreSessions = async () => {
  */
 const shutdownAll = async () => {
   for (const [userId, session] of sessions.entries()) {
+    clearStuckWatchdog(session);
+
     if (session.reconnectTimer) {
       clearTimeout(session.reconnectTimer);
       session.reconnectTimer = null;
