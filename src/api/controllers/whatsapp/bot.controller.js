@@ -43,6 +43,7 @@ const MEDIA_TYPES = [
 ];
 
 const CATEGORIES = [
+  "filter_message",
   "general",
   "support",
   "sales",

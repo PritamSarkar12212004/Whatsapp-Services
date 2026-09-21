@@ -133,6 +133,7 @@ const botSchema = new mongoose.Schema(
     category: {
       type: String,
       enum: [
+        "filter_message",
         "general",
         "support",
         "sales",
@@ -141,7 +142,7 @@ const botSchema = new mongoose.Schema(
         "moderation",
         "custom",
       ],
-      default: "general",
+      default: "filter_message",
     },
     language: {
       type: String,
