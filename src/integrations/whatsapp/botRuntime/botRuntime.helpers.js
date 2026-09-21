@@ -145,36 +145,53 @@ export const resolveDelayMs = (behavior = {}, trigger = null) => {
  * reply instead of sending something broken.
  */
 /**
- * Options for a reply: a rule can quote the message it answers, which reads
- * like swipe-to-reply inside the group.
+ * The `@…` handle WhatsApp shows for a person — the user part of their jid.
  *
- * The key is rebuilt with only the fields WhatsApp needs — a raw `msg.key`
- * carries extras and sometimes no usable id, and quoting then throws.
- *
- * @returns {Object|undefined} third argument for sock.sendMessage
+ * @param {String} jid e.g. 919999999999@s.whatsapp.net
+ * @returns {String} e.g. 919999999999
  */
-export const replyOptions = (quoted, msgKey) => {
-  if (!quoted || !msgKey || msgKey.fromMe) return undefined;
-  if (!msgKey.id || !msgKey.remoteJid) return undefined;
+export const mentionHandle = (jid) =>
+  String(jid ?? "")
+    .split("@")[0]
+    .split(":")[0]
+    .trim();
 
-  const key = {
-    id: msgKey.id,
-    remoteJid: msgKey.remoteJid,
-    fromMe: false,
-  };
-  if (msgKey.participant) key.participant = msgKey.participant;
-
-  return { quoted: key };
+/**
+ * Prefix the reply with `@<handle>` so the person reads as tagged in the group.
+ *
+ * @param {String} text      reply text (variables already applied)
+ * @param {Boolean} mention  is the rule's tag switch on
+ * @param {String} senderJid the person who sent the matched message
+ */
+export const tagSender = (text, mention, senderJid) => {
+  const body = String(text ?? "");
+  const handle = mentionHandle(senderJid);
+  if (!mention || !handle) return body;
+  return `@${handle} ${body}`;
 };
 
 /**
- * Send a message; if the quoted variant fails, retry without the quote so the
- * reply is never lost to a bad key (the person would just see silence).
+ * Options for a reply: a rule can tag the sender so a busy group still shows
+ * who the bot is answering.
+ *
+ * WhatsApp only turns `@<number>` into a real tag when the jid is listed in
+ * `mentions` — the text prefix and this option always travel together.
+ *
+ * @returns {Object|undefined} third argument for sock.sendMessage
+ */
+export const mentionOptions = (mention, senderJid) => {
+  if (!mention || !senderJid) return undefined;
+  return { mentions: [senderJid] };
+};
+
+/**
+ * Send a message; if the options variant fails (an unsupported tag jid, for
+ * example) retry without them so the reply is never lost to silence.
  *
  * @param {Function} sendMessage async (jid, payload, options) => void
- * @returns {Promise<{ sent: boolean, quoted: boolean, error: string|null }>}
+ * @returns {Promise<{ sent: boolean, withOptions: boolean, error: string|null }>}
  */
-export const sendWithQuotedFallback = async (
+export const sendWithOptionsFallback = async (
   sendMessage,
   jid,
   payload,
@@ -182,18 +199,18 @@ export const sendWithQuotedFallback = async (
 ) => {
   try {
     await sendMessage(jid, payload, options);
-    return { sent: true, quoted: !!options?.quoted, error: null };
+    return { sent: true, withOptions: !!options, error: null };
   } catch (err) {
-    if (!options?.quoted) {
-      return { sent: false, quoted: false, error: err.message };
+    if (!options) {
+      return { sent: false, withOptions: false, error: err.message };
     }
 
-    // Quoted reply failed — the message itself still matters more than the quote.
+    // The tag failed — the message itself still matters more.
     try {
       await sendMessage(jid, payload);
-      return { sent: true, quoted: false, error: err.message };
+      return { sent: true, withOptions: false, error: err.message };
     } catch (retryErr) {
-      return { sent: false, quoted: false, error: retryErr.message };
+      return { sent: false, withOptions: false, error: retryErr.message };
     }
   }
 };

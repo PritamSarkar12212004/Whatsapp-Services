@@ -21,8 +21,9 @@ import {
   withinWorkingHours,
   resolveDelayMs,
   buildReplyPayload,
-  replyOptions,
-  sendWithQuotedFallback,
+  tagSender,
+  mentionOptions,
+  sendWithOptionsFallback,
 } from "./botRuntime.helpers.js";
 
 // ==================== STATE ====================
@@ -98,7 +99,7 @@ const bumpStats = async (botId, inc, extra = {}) => {
 };
 
 const send = async (sock, groupJid, payload, options) => {
-  const result = await sendWithQuotedFallback(
+  const result = await sendWithOptionsFallback(
     (jid, body, opts) => sock.sendMessage(jid, body, opts),
     groupJid,
     payload,
@@ -108,11 +109,10 @@ const send = async (sock, groupJid, payload, options) => {
   if (!result.sent) {
     console.error(chalk.yellow(`[Bot] Send failed: ${result.error}`));
   } else if (result.error) {
-    const key = options?.quoted || {};
     console.warn(
       chalk.yellow(
-        `[Bot] Quoted reply failed (${result.error}) — sent it as a plain message instead` +
-          ` [key id=${key.id} jid=${key.remoteJid} participant=${key.participant || "-"}]`,
+        `[Bot] Tagging failed (${result.error}) — sent it without the tag instead` +
+          ` [mentions=${(options?.mentions || []).join(",") || "-"}]`,
       ),
     );
   }
@@ -147,7 +147,7 @@ const botReplies = async (
   senderName,
   trigger,
   text,
-  msgKey,
+  senderJid,
 ) => {
   const vars = {
     name: senderName,
@@ -165,13 +165,17 @@ const botReplies = async (
   // Media URLs accept variables too, so one rule can send per-person files.
   const mediaUrl = trigger.mediaUrl ? applyVars(trigger.mediaUrl, vars) : null;
 
-  const payload = buildReplyPayload(reply, trigger.mediaType, mediaUrl);
-  // `quoted` rules answer the exact message the person sent (swipe-to-reply).
+  // `mention` rules open the reply with @theirhandle so they read as tagged.
+  const payload = buildReplyPayload(
+    tagSender(reply, trigger.mention, senderJid),
+    trigger.mediaType,
+    mediaUrl,
+  );
   const sent = await send(
     sock,
     groupJid,
     payload,
-    replyOptions(trigger.quoted, msgKey),
+    mentionOptions(trigger.mention, senderJid),
   );
 
   if (sent) {
@@ -254,7 +258,7 @@ const runBot = async (sock, bot, ctx) => {
     senderName,
     trigger,
     text,
-    msgKey,
+    senderJid,
   );
 
   if (replied) {
@@ -359,7 +363,7 @@ export const simulateBotMessage = (bot, text, senderName = "Test user") => {
       value: trigger.value,
     },
     reply: applyVars(trigger.reply, { name: senderName, message: text, bot: bot.name }),
-    quoted: !!trigger.quoted,
+    mention: !!trigger.mention,
     mediaType: trigger.mediaType || "text",
     mediaUrl: trigger.mediaUrl || null,
     delayMs: resolveDelayMs(bot.behavior, trigger),
