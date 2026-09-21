@@ -29,6 +29,12 @@ const whatsappAccountSchema = new mongoose.Schema(
       trim: true,
     },
 
+    /**
+     * What the user typed when adding this number. Kept so the app can tell
+     * them when the number they linked is NOT the one they meant to link.
+     */
+    expectedPhoneNumber: { type: String, default: null },
+
     /** Filled in once the number is linked (pushed from the socket). */
     phoneNumber: { type: String, default: null },
     profileName: { type: String, default: null },

@@ -30,17 +30,69 @@ const requireUser = (req, res) => {
   return userId;
 };
 
+/** Digits only — users paste "+91 98765 43210", "(0)98765…" and so on. */
+export const normalizePhone = (value) =>
+  String(value ?? "")
+    .replace(/\D/g, "")
+    .replace(/^0+/, "");
+
+/** WhatsApp international numbers are 8–15 digits including the country code. */
+export const isValidPhone = (value) => {
+  const digits = normalizePhone(value);
+  return digits.length >= 8 && digits.length <= 15;
+};
+
+/**
+ * Same number, however it happens to be formatted?
+ * WhatsApp reports the linked number as `919999999999`; someone may have typed
+ * `09999999999`. Comparing the national part avoids a false alarm.
+ */
+export const sameNumber = (a, b) => {
+  const left = normalizePhone(a);
+  const right = normalizePhone(b);
+  if (!left || !right) return true; // nothing to compare → not a mismatch
+  if (left === right) return true;
+  return left.slice(-10) === right.slice(-10);
+};
+
+/**
+ * Does this row already hold `digits`?
+ *
+ * Unlike `sameNumber`, blanks never match — otherwise a row with no number yet
+ * would look like a duplicate of everything.
+ */
+export const rowHasNumber = (row, digits) => {
+  const target = normalizePhone(digits);
+  if (target.length < 7) return false;
+
+  return [row?.phoneNumber, row?.expectedPhoneNumber]
+    .map((value) => normalizePhone(value))
+    .some(
+      (value) => value.length >= 7 && value.slice(-10) === target.slice(-10),
+    );
+};
+
 /** Live session state merged with what the row remembers. */
 const withLiveStatus = (account) => {
   const accountId = account.accountId ?? PRIMARY_ACCOUNT_ID;
   const key = buildWaKey(account.userId, accountId);
   const live = getStatus(key);
 
+  const linkedNumber = live.phoneNumber || account.phoneNumber || null;
+  const expected = account.expectedPhoneNumber || null;
+
   return {
     accountId,
     label: account.label || "",
     isPrimary: !accountId,
-    phoneNumber: live.phoneNumber || account.phoneNumber || null,
+    /** The number as WhatsApp reports it (falls back to what was stored). */
+    phoneNumber: linkedNumber,
+    /** What the user entered when adding the number. */
+    expectedPhoneNumber: expected,
+    /** Typed and linked numbers disagree — the UI warns about it. */
+    numberMismatch: Boolean(
+      expected && linkedNumber && !sameNumber(expected, linkedNumber),
+    ),
     profileName: account.profileName || null,
     status: live.status || account.status || "disconnected",
     connected: Boolean(live.connected),
@@ -91,12 +143,39 @@ export const createAccountController = async (req, res) => {
       .trim()
       .slice(0, 40);
 
+    // The number is required and validated here as well as in the UI — a
+    // half-saved number would leave the accounts list showing nonsense.
+    const phoneNumber = normalizePhone(req.body?.phoneNumber);
+
+    if (!isValidPhone(phoneNumber)) {
+      return res.status(400).json({
+        status: "error",
+        message:
+          "Enter a valid WhatsApp number with its country code (8–15 digits)",
+      });
+    }
+
+    // The same number twice would leave two sessions fighting over one WhatsApp
+    // account, so it is refused up front (numbers already linked included).
+    const known = await WhatsappAccount.find({ userId }).lean();
+    const already = known.find((row) => rowHasNumber(row, phoneNumber));
+
+    if (already) {
+      return res.status(409).json({
+        status: "error",
+        message: `+${phoneNumber} is already added — remove it first or pick another number`,
+      });
+    }
+
     const accountId = newAccountId();
 
     const account = await WhatsappAccount.create({
       userId,
       accountId,
       label: label || `Number ${accountId.slice(0, 4)}`,
+      // Remember what was typed so a wrong-number scan can be spotted later.
+      expectedPhoneNumber: phoneNumber,
+      phoneNumber,
       status: "disconnected",
     });
 
@@ -209,6 +288,10 @@ export const deleteAccountController = async (req, res) => {
 };
 
 export default {
+  rowHasNumber,
+  normalizePhone,
+  isValidPhone,
+  sameNumber,
   listAccountsController,
   createAccountController,
   updateAccountController,
