@@ -195,6 +195,11 @@ const connect = async (userId, { force = false } = {}) => {
     );
     teardownSocket(session);
     session.status = "disconnected";
+    // An explicit retry deserves a fresh self-healing budget. Dropping a stale
+    // init promise matters too: a wedged one would otherwise be awaited again
+    // instead of building a new socket (the superseded run bails on its own).
+    session.stuckRecoveries = 0;
+    session.initializationPromise = null;
   }
 
   // Socket exists and is not disconnected (connecting, qr_required, connected) → reuse
@@ -221,12 +226,17 @@ const connect = async (userId, { force = false } = {}) => {
   }
 
   // Set initialization promise to prevent concurrent init
-  session.initializationPromise = initializeSocket(userId, session);
+  const promise = initializeSocket(userId, session);
+  session.initializationPromise = promise;
 
   try {
-    return await session.initializationPromise;
+    return await promise;
   } finally {
-    session.initializationPromise = null;
+    // Only clear our own promise — a forced restart may have replaced it with a
+    // newer init that must stay visible to concurrent connect() calls.
+    if (session.initializationPromise === promise) {
+      session.initializationPromise = null;
+    }
   }
 };
 

@@ -14,10 +14,12 @@ const whatsappStatusController = async (req, res) => {
     const status = getStatus(userId);
 
     return res.status(200).json({
-      status: "success",
-      connected: status.connected,
       status: status.status,
+      connected: status.connected,
       phoneNumber: status.phoneNumber,
+      // Milliseconds the socket has been stuck in "connecting" (null when it
+      // is not connecting) — lets the client size up a wedged session.
+      connectingFor: status.connectingFor ?? null,
     });
   } catch (err) {
     console.error("Error getting WhatsApp status:", err.message);
