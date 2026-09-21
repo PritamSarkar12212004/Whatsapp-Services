@@ -4,6 +4,11 @@ import groupManagerModel from "../../models/whatsapp/groupManager.model.js";
 import groupWarningLogModel from "../../models/whatsapp/groupWarningLog.model.js";
 import Template from "../../models/messaging/template.model.js";
 import {
+  handleBotGroupMessage,
+  handleBotMemberEvent,
+  getBotsForGroup,
+} from "./botRuntime/botRuntime.service.js";
+import {
   getText,
   getMemberNumber,
   getMemberName,
@@ -42,6 +47,16 @@ const getManager = async (userId, groupJid) => {
 
 export const invalidateManagerCache = (userId, groupJid) => {
   managerCache.delete(`${userId}:${groupJid}`);
+};
+
+/** Cheap "is any bot watching this group?" check for the message hot path. */
+const hasBotsForGroup = async (userId, groupJid) => {
+  try {
+    const bots = await getBotsForGroup(userId, groupJid);
+    return bots.length > 0;
+  } catch {
+    return false;
+  }
 };
 
 // ==================== MODERATION ====================
@@ -243,19 +258,24 @@ const processGroupMessage = async (sock, userId, msg) => {
     const text = getText(msg);
     const senderJid = jidNormalizedUser(msg.key?.participant || msg.key?.remoteJid);
 
+    // Bots are independent of the legacy per-group manager config: a group can
+    // have bots attached without ever opening the Group Automation screen.
+    const botsActive = await hasBotsForGroup(userId, remoteJid);
     const manager = await getManager(userId, remoteJid);
-    if (!manager) return;
+    if (!manager && !botsActive) return;
 
-    // --- Commands ---
-    if (manager.commands?.enabled && text.startsWith("!")) {
+    // --- Commands (only from the manager config) ---
+    if (manager?.commands?.enabled && text.startsWith("!")) {
       await handleCommand(sock, userId, manager, remoteJid, text, senderJid);
       return;
     }
 
     if (!text) return;
 
+    const safeManager = manager || { rules: [], settings: {} };
+
     // --- Banned words ---
-    const bannedRules = enabledRules(manager, "banned_words");
+    const bannedRules = enabledRules(safeManager, "banned_words");
     if (bannedRules.length) {
       const lower = text.toLowerCase();
       const hit = bannedRules.some((r) =>
@@ -266,22 +286,22 @@ const processGroupMessage = async (sock, userId, msg) => {
           .some((w) => lower.includes(w)),
       );
       if (hit) {
-        await handleViolation(sock, userId, manager, remoteJid, senderJid, text, "banned_words");
-        if (manager.settings?.autoDelete) await deleteMessage(sock, remoteJid, msg.key);
+        await handleViolation(sock, userId, safeManager, remoteJid, senderJid, text, "banned_words");
+        if (safeManager.settings?.autoDelete) await deleteMessage(sock, remoteJid, msg.key);
         return;
       }
     }
 
     // --- Anti-link ---
-    const linkRules = enabledRules(manager, "anti_link");
+    const linkRules = enabledRules(safeManager, "anti_link");
     if (linkRules.length && isUrl(text)) {
-      await handleViolation(sock, userId, manager, remoteJid, senderJid, text, "anti_link");
-      if (manager.settings?.autoDelete) await deleteMessage(sock, remoteJid, msg.key);
+      await handleViolation(sock, userId, safeManager, remoteJid, senderJid, text, "anti_link");
+      if (safeManager.settings?.autoDelete) await deleteMessage(sock, remoteJid, msg.key);
       return;
     }
 
     // --- Anti-flood ---
-    const floodRules = enabledRules(manager, "anti_flood");
+    const floodRules = enabledRules(safeManager, "anti_flood");
     if (floodRules.length) {
       const key = `${userId}:${remoteJid}:${senderJid}`;
       const now = Date.now();
@@ -292,13 +312,27 @@ const processGroupMessage = async (sock, userId, msg) => {
       floodState.set(key, times);
       if (times.length > FLOOD_MAX_MESSAGES) {
         floodState.set(key, [now]);
-        await handleViolation(sock, userId, manager, remoteJid, senderJid, text, "anti_flood");
+        await handleViolation(sock, userId, safeManager, remoteJid, senderJid, text, "anti_flood");
         return;
       }
     }
 
+    // --- Bots (per-group automation personas) ---
+    // Runs before the legacy keyword rules: a bot that answers owns the message,
+    // so one incoming message never gets two different replies.
+    if (botsActive) {
+      const handledByBot = await handleBotGroupMessage(sock, userId, {
+        groupJid: remoteJid,
+        text,
+        senderJid,
+        senderName: getMemberName(sock, senderJid),
+        msgKey: msg.key,
+      });
+      if (handledByBot) return;
+    }
+
     // --- Auto-reply (keyword) ---
-    const replyRules = enabledRules(manager, "auto_reply");
+    const replyRules = enabledRules(safeManager, "auto_reply");
     for (const rule of replyRules) {
       const trigger = String(rule.trigger || "").trim().toLowerCase();
       if (trigger && text.toLowerCase().includes(trigger)) {
@@ -319,21 +353,38 @@ const handleParticipantsUpdate = async (sock, userId, update) => {
     if (!groupJid.endsWith("@g.us")) return;
 
     const manager = await getManager(userId, groupJid);
-    if (!manager) return;
+    const safeManager = manager || { rules: [], settings: {} };
 
     for (const p of update.participants || []) {
       const memberJid = jidNormalizedUser(p.id);
       const memberName = getMemberName(sock, memberJid);
 
       if (p.add) {
-        const welcomeRules = enabledRules(manager, "welcome");
+        // A bot welcome wins over the legacy rule so members aren't greeted twice
+        const byBot = await handleBotMemberEvent(sock, userId, {
+          groupJid,
+          memberJid,
+          memberName,
+          kind: "welcome",
+        });
+        if (byBot) continue;
+
+        const welcomeRules = enabledRules(safeManager, "welcome");
         if (welcomeRules.length) {
           await sock.sendMessage(groupJid, {
             text: fillVars(welcomeRules[0].value, { name: memberName }),
           });
         }
       } else if (p.remove) {
-        const goodbyeRules = enabledRules(manager, "goodbye");
+        const byBot = await handleBotMemberEvent(sock, userId, {
+          groupJid,
+          memberJid,
+          memberName,
+          kind: "goodbye",
+        });
+        if (byBot) continue;
+
+        const goodbyeRules = enabledRules(safeManager, "goodbye");
         if (goodbyeRules.length) {
           await sock.sendMessage(groupJid, {
             text: fillVars(goodbyeRules[0].value, { name: memberName }),
