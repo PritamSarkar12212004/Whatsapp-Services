@@ -126,6 +126,15 @@ const ensureEventListeners = (userId, sock) => {
  * contactAction, which re-emits 'contacts.upsert' into the cache.
  * (Only once per socket; the versions are re-stored automatically afterwards.)
  */
+/**
+ * A full app-state snapshot is thousands of syncd keys over a single IQ. On a
+ * weak link Baileys answers that IQ with "timed out waiting for message" and
+ * keeps retrying the same collection, which is what made the sync look stuck
+ * on the network. So the snapshot gets a hard deadline of its own: whatever it
+ * has delivered by then is what the caches get.
+ */
+const APP_STATE_SNAPSHOT_TIMEOUT_MS = 20000;
+
 const recoverAppStateContacts = async (userId, sock) => {
   if (!sock || appStateRecoveredSockets.has(sock)) return;
   appStateRecoveredSockets.add(sock);
@@ -140,6 +149,7 @@ const recoverAppStateContacts = async (userId, sock) => {
   console.log(
     "[Contacts Sync] Requesting full app-state snapshot to recover saved contacts",
   );
+
   try {
     await sock.authState.keys.set({
       "app-state-sync-version": {
@@ -148,9 +158,22 @@ const recoverAppStateContacts = async (userId, sock) => {
         regular_low: undefined,
       },
     });
-    await sock.resyncAppState(["regular", "regular_high", "regular_low"], true);
+
+    const finished = await withTimeout(
+      sock.resyncAppState(["regular", "regular_high", "regular_low"], true),
+      APP_STATE_SNAPSHOT_TIMEOUT_MS,
+      false,
+      "app-state snapshot",
+    );
+
+    if (!finished) {
+      console.warn(
+        "[Contacts Sync] App-state snapshot did not finish in time — continuing with the contacts already found",
+      );
+    }
+
     // createBufferedFunction flushes emitted events ~100ms after completion.
-    await delay(800);
+    await delay(finished ? 800 : 200);
   } catch (err) {
     console.error(
       `[Contacts Sync] App-state snapshot recovery failed: ${err.message}`,
