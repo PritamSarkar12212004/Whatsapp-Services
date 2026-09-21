@@ -11,7 +11,7 @@ import { setupGroupAutomation } from "./groupAutomation.service.js";
 import whatsappConnectionLog from "../../logs/connections/whatsappConnectionLog.js";
 import WhatsAppSession from "../../models/whatsapp/whatsappSession.model.js";
 import contactSyncService from "../../services/messaging/contactSync.service.js";
-import { applyReceipts } from "./receipts.js";
+import { applyReceipts, applyGroupReceipts } from "./receipts.js";
 
 const AUTH_BASE_FOLDER = path.join(
   path.resolve(),
@@ -375,6 +375,19 @@ const initializeSocket = async (userId, session) => {
     } catch (err) {
       console.error(
         `[Baileys] receipt handler error for user ${userId}:`,
+        err.message,
+      );
+    }
+  });
+
+  // Group chats report receipts on a different event (Baileys 7 keeps
+  // `messages.update` for direct chats only).
+  sock.ev.on("message-receipt.update", async (receipts) => {
+    try {
+      await applyGroupReceipts(userId, receipts);
+    } catch (err) {
+      console.error(
+        `[Baileys] group receipt handler error for user ${userId}:`,
         err.message,
       );
     }
