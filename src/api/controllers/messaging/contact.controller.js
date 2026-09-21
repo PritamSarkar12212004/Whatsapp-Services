@@ -193,11 +193,20 @@ const contactController = {
 
       return res.status(200).json({
         status: "success",
-        message: "WhatsApp contacts synchronized",
+        // A run that hit the database deadline reports what it managed to send
+        // and how it ended, instead of pretending everything finished.
+        message: result.timedOut
+          ? "Contact sync is still finishing in the background"
+          : result.unchanged === result.total && result.total > 0
+            ? "Contacts are already up to date"
+            : "WhatsApp contacts synchronized",
         data: {
           found: result.found || 0,
           inserted: result.inserted || 0,
+          // Contacts that were already current are not part of "updated".
           updated: result.updated || 0,
+          unchanged: result.unchanged || 0,
+          timedOut: Boolean(result.timedOut),
           skippedGroups: result.skippedGroups || 0,
           skippedInvalid: result.skippedInvalid || 0,
           skippedSelf: result.skippedSelf || 0,

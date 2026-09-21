@@ -468,6 +468,30 @@ const normalizeContactList = (userId, sock, entries) => {
  *   session files (used for the session contact registry fallback)
  * @returns {Promise<Object>} summary
  */
+/**
+ * Hard ceiling for the database phase of one sync. A hung connection must never
+ * leave the caller (and the "Syncing…" button) waiting forever — the writes
+ * that were already sent keep going in the background.
+ */
+const DB_PHASE_TIMEOUT_MS = 120000;
+
+/**
+ * Resolve with `fallback` when `promise` takes longer than `ms`.
+ * The underlying work is not cancelled — it is only stopped from blocking us.
+ */
+const withTimeout = (promise, ms, fallback, label) => {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((resolve) => {
+      timer = setTimeout(() => {
+        console.warn(`[Contacts Sync] ${label} is taking longer than ${ms}ms — moving on`);
+        resolve(fallback);
+      }, ms);
+    }),
+  ]);
+};
+
 const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
   const reason = options.reason || "connect";
   const authFolder = options.authFolder || null;
@@ -507,6 +531,7 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
       found: 0,
       inserted: 0,
       updated: 0,
+      unchanged: 0,
       skippedGroups: 0,
       skippedInvalid: 0,
       skippedSelf: 0,
@@ -516,21 +541,27 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
     try {
       ensureEventListeners(ownerId, sock);
 
-      console.log(`[Contacts Sync] Connection ready for user ${ownerId}`);
+      const startedAt = Date.now();
+      console.log(
+        `[Contacts Sync] Starting for user ${ownerId} (reason: ${reason})`,
+      );
 
       // Give app-state sync a moment to deliver saved-contact metadata.
       if (reason === "connect") {
         await delay(APP_STATE_GRACE_MS);
       }
 
-      await recoverAppStateContacts(ownerId, sock);
-
       const maxAttempts = RETRY_DELAYS_MS.length; // 3
       let attempt = 0;
       let lastFetch = null;
+      // The full app-state snapshot is the heaviest thing we can ask a weak
+      // connection to do, so it is only requested when the cheap discovery
+      // sources came back empty (see the retry body below).
+      let appStateRecoveryTried = false;
 
       while (attempt < maxAttempts) {
         attempt++;
+        const discoveryStart = Date.now();
         try {
           lastFetch = await fetchContactsFromBaileys(ownerId, sock, {
             authFolder,
@@ -561,23 +592,57 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
         console.log(`[Contacts Sync] Self skipped: ${skippedSelf}`);
 
         if (contacts.length > 0) {
-          console.log(`[Contacts Sync] Upserting ${contacts.length} contacts`);
-          const syncResult = await syncWhatsAppContacts({
-            ownerId,
-            contacts,
-            overwrite: options.overwrite || false,
-          });
+          console.log(
+            `[Contacts Sync] Discovery took ${Date.now() - discoveryStart}ms — upserting ${contacts.length} contacts`,
+          );
+
+          const dbStart = Date.now();
+          const syncResult = await withTimeout(
+            syncWhatsAppContacts({
+              ownerId,
+              contacts,
+              overwrite: options.overwrite || false,
+            }),
+            DB_PHASE_TIMEOUT_MS,
+            null,
+            "contact upsert",
+          );
+
+          if (!syncResult) {
+            // The writes continue in the background; report what we know so the
+            // UI stops spinning instead of waiting on a slow database.
+            summary.completed = false;
+            summary.timedOut = true;
+            lastSyncAt.set(ownerId, Date.now());
+            console.warn(
+              `[Contacts Sync] Database phase timed out after ${Date.now() - startedAt}ms`,
+            );
+            return summary;
+          }
+
           summary.inserted = syncResult.inserted;
           summary.updated = syncResult.updated;
+          summary.unchanged = syncResult.unchanged;
           summary.completed = true;
           lastSyncAt.set(ownerId, Date.now());
-          console.log(`[Contacts Sync] Inserted: ${syncResult.inserted}`);
-          console.log(`[Contacts Sync] Updated: ${syncResult.updated}`);
-          console.log(`[Contacts Sync] Completed`);
+          console.log(
+            `[Contacts Sync] Inserted: ${syncResult.inserted} · Updated: ${syncResult.updated} · Already current: ${syncResult.unchanged}`,
+          );
+          console.log(
+            `[Contacts Sync] Completed in ${Date.now() - startedAt}ms (database round ${Date.now() - dbStart}ms)`,
+          );
           return summary;
         }
 
-        // No contacts available — log WHY, then retry with backoff.
+        // Nothing found from the cheap sources — only now ask for the full
+        // app-state snapshot (once), then retry straight away.
+        if (!appStateRecoveryTried) {
+          appStateRecoveryTried = true;
+          await recoverAppStateContacts(ownerId, sock);
+          continue;
+        }
+
+        // Still nothing — log WHY, then retry with backoff.
         console.log(
           `[Contacts Sync] No contacts available from ${summary.source}`,
         );
