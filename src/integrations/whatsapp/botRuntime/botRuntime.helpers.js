@@ -148,10 +148,55 @@ export const resolveDelayMs = (behavior = {}, trigger = null) => {
  * Options for a reply: a rule can quote the message it answers, which reads
  * like swipe-to-reply inside the group.
  *
+ * The key is rebuilt with only the fields WhatsApp needs — a raw `msg.key`
+ * carries extras and sometimes no usable id, and quoting then throws.
+ *
  * @returns {Object|undefined} third argument for sock.sendMessage
  */
-export const replyOptions = (quoted, msgKey) =>
-  quoted && msgKey ? { quoted: msgKey } : undefined;
+export const replyOptions = (quoted, msgKey) => {
+  if (!quoted || !msgKey || msgKey.fromMe) return undefined;
+  if (!msgKey.id || !msgKey.remoteJid) return undefined;
+
+  const key = {
+    id: msgKey.id,
+    remoteJid: msgKey.remoteJid,
+    fromMe: false,
+  };
+  if (msgKey.participant) key.participant = msgKey.participant;
+
+  return { quoted: key };
+};
+
+/**
+ * Send a message; if the quoted variant fails, retry without the quote so the
+ * reply is never lost to a bad key (the person would just see silence).
+ *
+ * @param {Function} sendMessage async (jid, payload, options) => void
+ * @returns {Promise<{ sent: boolean, quoted: boolean, error: string|null }>}
+ */
+export const sendWithQuotedFallback = async (
+  sendMessage,
+  jid,
+  payload,
+  options,
+) => {
+  try {
+    await sendMessage(jid, payload, options);
+    return { sent: true, quoted: !!options?.quoted, error: null };
+  } catch (err) {
+    if (!options?.quoted) {
+      return { sent: false, quoted: false, error: err.message };
+    }
+
+    // Quoted reply failed — the message itself still matters more than the quote.
+    try {
+      await sendMessage(jid, payload);
+      return { sent: true, quoted: false, error: err.message };
+    } catch (retryErr) {
+      return { sent: false, quoted: false, error: retryErr.message };
+    }
+  }
+};
 
 export const buildReplyPayload = (reply, mediaType = "text", mediaUrl = null) => {
   const text = String(reply ?? "");

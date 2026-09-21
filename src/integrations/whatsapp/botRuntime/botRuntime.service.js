@@ -22,6 +22,7 @@ import {
   resolveDelayMs,
   buildReplyPayload,
   replyOptions,
+  sendWithQuotedFallback,
 } from "./botRuntime.helpers.js";
 
 // ==================== STATE ====================
@@ -97,13 +98,26 @@ const bumpStats = async (botId, inc, extra = {}) => {
 };
 
 const send = async (sock, groupJid, payload, options) => {
-  try {
-    await sock.sendMessage(groupJid, payload, options);
-    return true;
-  } catch (err) {
-    console.error(chalk.yellow(`[Bot] Send failed: ${err.message}`));
-    return false;
+  const result = await sendWithQuotedFallback(
+    (jid, body, opts) => sock.sendMessage(jid, body, opts),
+    groupJid,
+    payload,
+    options,
+  );
+
+  if (!result.sent) {
+    console.error(chalk.yellow(`[Bot] Send failed: ${result.error}`));
+  } else if (result.error) {
+    const key = options?.quoted || {};
+    console.warn(
+      chalk.yellow(
+        `[Bot] Quoted reply failed (${result.error}) — sent it as a plain message instead` +
+          ` [key id=${key.id} jid=${key.remoteJid} participant=${key.participant || "-"}]`,
+      ),
+    );
   }
+
+  return result.sent;
 };
 
 /** Best-effort presence + read receipt; failures are never fatal. */
