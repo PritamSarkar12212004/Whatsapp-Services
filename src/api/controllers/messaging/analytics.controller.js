@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Message from "../../../models/messaging/message.model.js";
 import Campaign from "../../../models/messaging/campaign.model.js";
 import CampaignRecipient from "../../../models/messaging/campaignRecipient.model.js";
@@ -8,6 +9,21 @@ import { lastNDays } from "./analytics/analytics.helpers.js";
 
 // See: ./analytics/analytics.helpers.js (date-range helpers)
 
+/**
+ * Mongoose does NOT cast aggregation pipelines — only normal queries are
+ * cast, `aggregate()` is not. So the JWT's string userId must be converted to
+ * an ObjectId explicitly; otherwise every `$match: { owner }` compares an
+ * ObjectId column against a string, matches nothing and the dashboard comes
+ * back completely empty.
+ *
+ * Same convention as template.service.js and campaign/campaign.stats.js.
+ */
+const toObjectId = (value) => {
+  const str = String(value || "");
+  if (!/^[0-9a-fA-F]{24}$/.test(str)) return null;
+  return new mongoose.Types.ObjectId(str);
+};
+
 
 const analyticsController = {
   /**
@@ -17,8 +33,9 @@ const analyticsController = {
   async getAnalytics(req, res) {
     try {
       const ownerId = req.user.userId;
+      const ownerObjectId = toObjectId(ownerId);
 
-      if (!ownerId) {
+      if (!ownerId || !ownerObjectId) {
         return res.status(401).json({
           status: "error",
           message: "User not authenticated",
@@ -31,10 +48,19 @@ const analyticsController = {
       // ------------------------------------------------------------------
       // 1. Overview counters
       // ------------------------------------------------------------------
+      // CampaignRecipient has no `owner` field of its own, so its analytics
+      // must be scoped through the campaigns that belong to this owner.
+      // (Previously this aggregate was completely unscoped, which mixed every
+      // tenant's recipient stats into each dashboard.)
+      const ownedCampaigns = await Campaign.find({ owner: ownerObjectId })
+        .select("_id")
+        .lean();
+      const ownedCampaignIds = ownedCampaigns.map((c) => c._id);
+
       const [messageCounts, campaignCounts, contactCount, recipientCounts] =
         await Promise.all([
           Message.aggregate([
-            { $match: { owner: ownerId } },
+            { $match: { owner: ownerObjectId } },
             {
               $group: {
                 _id: null,
@@ -58,12 +84,17 @@ const analyticsController = {
             },
           ]),
           Campaign.aggregate([
-            { $match: { owner: ownerId } },
+            { $match: { owner: ownerObjectId } },
             { $group: { _id: "$status", count: { $sum: 1 } } },
           ]),
-          Contact.countDocuments({ owner: ownerId }),
+          Contact.countDocuments({ owner: ownerObjectId }),
           CampaignRecipient.aggregate([
-            { $match: { status: { $in: ["sent", "delivered", "read", "failed"] } } },
+            {
+              $match: {
+                campaign: { $in: ownedCampaignIds },
+                status: { $in: ["sent", "delivered", "read", "failed"] },
+              },
+            },
             {
               $group: {
                 _id: null,
@@ -114,7 +145,7 @@ const analyticsController = {
       const dailyRows = await Message.aggregate([
         {
           $match: {
-            owner: ownerId,
+            owner: ownerObjectId,
             createdAt: { $gte: since },
           },
         },
@@ -157,7 +188,7 @@ const analyticsController = {
       // 3. Status breakdown (donut)
       // ------------------------------------------------------------------
       const statusCounts = await Message.aggregate([
-        { $match: { owner: ownerId } },
+        { $match: { owner: ownerObjectId } },
         { $group: { _id: "$status", count: { $sum: 1 } } },
       ]);
       const statusMap = new Map(statusCounts.map((r) => [r._id, r.count]));
@@ -199,7 +230,7 @@ const analyticsController = {
         .sort((a, b) => b.value - a.value);
 
       const topCampaigns = await Campaign.aggregate([
-        { $match: { owner: ownerId } },
+        { $match: { owner: ownerObjectId } },
         { $sort: { "statistics.sent": -1 } },
         { $limit: 6 },
         {
@@ -218,7 +249,7 @@ const analyticsController = {
       // 5. Message type breakdown
       // ------------------------------------------------------------------
       const typeCounts = await Message.aggregate([
-        { $match: { owner: ownerId } },
+        { $match: { owner: ownerObjectId } },
         { $group: { _id: "$type", count: { $sum: 1 } } },
       ]);
       const typeMap = new Map(typeCounts.map((r) => [r._id, r.count]));
@@ -255,7 +286,7 @@ const analyticsController = {
         blocked: "Blocked",
       };
 
-      const recentActivities = await ContactActivity.find({ owner: ownerId })
+      const recentActivities = await ContactActivity.find({ owner: ownerObjectId })
         .sort({ timestamp: -1 })
         .limit(12)
         .populate("contact", "name phoneNumber")
