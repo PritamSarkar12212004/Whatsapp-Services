@@ -22,10 +22,12 @@ const createApp = () => {
           origin.startsWith("http://127.0.0.1")
         ) {
           return callback(null, true);
-        }``
+        }
         return callback(null, false);
       },
-      methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      // PATCH is used by the bot editor — without it the browser's preflight
+      // fails and "could not save" looks like a server bug.
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: [
         "Content-Type",
         "Authorization",
