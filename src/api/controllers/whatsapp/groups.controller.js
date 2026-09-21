@@ -23,8 +23,8 @@ const withTimeout = (promise, ms) => {
   ]);
 };
 
-const cachedPicture = (userId, jid) => {
-  const hit = pictureCache.get(`${userId}:${jid}`);
+const cachedPicture = (cacheScope, jid) => {
+  const hit = pictureCache.get(`${cacheScope}:${jid}`);
   if (!hit) return { known: false, url: null };
   const ttl = hit.url ? PICTURE_TTL_MS : MISSING_PICTURE_TTL_MS;
   if (Date.now() - hit.at > ttl) return { known: false, url: null };
@@ -36,7 +36,7 @@ const cachedPicture = (userId, jid) => {
  *
  * @returns {Promise<Map<String, String|null>>} jid -> picture url (null = none)
  */
-export const loadGroupPictures = async (sock, userId, jids) => {
+export const loadGroupPictures = async (sock, cacheScope, jids) => {
   const out = new Map();
   const queue = [...jids];
   const startedAt = Date.now();
@@ -45,7 +45,7 @@ export const loadGroupPictures = async (sock, userId, jids) => {
     while (queue.length) {
       const jid = queue.shift();
 
-      const cached = cachedPicture(userId, jid);
+      const cached = cachedPicture(cacheScope, jid);
       if (cached.known) {
         out.set(jid, cached.url);
         continue;
@@ -61,7 +61,7 @@ export const loadGroupPictures = async (sock, userId, jids) => {
         url = null; // no picture, private picture, or the lookup timed out
       }
 
-      pictureCache.set(`${userId}:${jid}`, { url, at: Date.now() });
+      pictureCache.set(`${cacheScope}:${jid}`, { url, at: Date.now() });
       out.set(jid, url);
     }
   };
@@ -90,7 +90,9 @@ const whatsappGroupsController = async (req, res) => {
       });
     }
 
-    const sock = getSocket(userId);
+    // Groups come from the selected number's socket.
+    const key = req.waKey || userId;
+    const sock = getSocket(key);
 
     if (!sock) {
       return res.status(400).json({
@@ -126,7 +128,7 @@ const whatsappGroupsController = async (req, res) => {
     // Fetched in one batch so the list still answers when WhatsApp is slow.
     const pictures = await loadGroupPictures(
       sock,
-      userId,
+      key,
       rawList.map((g) => g.id),
     );
 

@@ -8,6 +8,7 @@
  */
 
 import Bot from "../../../models/whatsapp/bot.model.js";
+import { buildWaKey } from "../../../utils/whatsapp/accountKey.js";
 import {
   invalidateBotCache,
   getBotsForGroup,
@@ -144,16 +145,34 @@ const buildUpdate = (body = {}) => {
   return update;
 };
 
+/**
+ * Which WhatsApp number this request is about.
+ * `null` = the primary number, so bots created before multi-account keep
+ * belonging to it (and requests without the header keep working).
+ */
+const accountOf = (req) => req.waAccountId ?? null;
+
+/** The account key — what the runtime and its caches are indexed by. */
+const accountKeyOf = (req) =>
+  req.waKey || `${requireOwner(req, {}) ?? req.user?.userId}`;
+
 const findOwned = async (req, res) => {
   const userId = requireOwner(req, res);
   if (!userId) return null;
 
-  const bot = await Bot.findOne({ _id: req.params.id, owner: userId }).lean();
+  const accountId = accountOf(req);
+  const bot = await Bot.findOne({ _id: req.params.id, owner: userId, accountId }).lean();
   if (!bot) {
     res.status(404).json({ status: "error", message: "Bot not found" });
     return null;
   }
-  return { userId, bot };
+
+  return {
+    userId,
+    accountId,
+    accountKey: buildWaKey(userId, accountId),
+    bot,
+  };
 };
 
 // ==================== CRUD ====================
@@ -163,7 +182,9 @@ export const listBotsController = async (req, res) => {
     const userId = requireOwner(req, res);
     if (!userId) return;
 
-    const bots = await Bot.find({ owner: userId }).sort({ createdAt: -1 }).lean();
+    const bots = await Bot.find({ owner: userId, accountId: accountOf(req) })
+      .sort({ createdAt: -1 })
+      .lean();
 
     return res.status(200).json({
       status: "success",
@@ -192,12 +213,13 @@ export const createBotController = async (req, res) => {
 
     const bot = await Bot.create({
       owner: userId,
+      accountId: accountOf(req),
       name,
       ...buildUpdate(req.body),
       // `behavior` / `triggers` arrive with sensible schema defaults when omitted
     });
 
-    invalidateBotCache(userId);
+    invalidateBotCache(accountKeyOf(req));
     return res.status(201).json({ status: "success", data: bot });
   } catch (err) {
     console.error("Error creating bot:", err.message);
@@ -238,7 +260,7 @@ export const updateBotController = async (req, res) => {
       { new: true },
     ).lean();
 
-    invalidateBotCache(found.userId);
+    invalidateBotCache(found.accountKey);
     return res.status(200).json({ status: "success", data: bot });
   } catch (err) {
     console.error("Error updating bot:", err.message);
@@ -253,8 +275,12 @@ export const deleteBotController = async (req, res) => {
     const userId = requireOwner(req, res);
     if (!userId) return;
 
-    const result = await Bot.deleteOne({ _id: req.params.id, owner: userId });
-    invalidateBotCache(userId);
+    const result = await Bot.deleteOne({
+      _id: req.params.id,
+      owner: userId,
+      accountId: accountOf(req),
+    });
+    invalidateBotCache(accountKeyOf(req));
 
     return res.status(200).json({
       status: "success",
@@ -276,6 +302,7 @@ export const duplicateBotController = async (req, res) => {
     const { _id, createdAt, updatedAt, ...rest } = found.bot;
     const copy = await Bot.create({
       ...rest,
+      accountId: found.accountId,
       name: `${found.bot.name} (copy)`.slice(0, MAX_BOT_NAME),
       // A copy starts as a draft: not switched on anywhere, counters reset.
       status: "inactive",
@@ -283,7 +310,7 @@ export const duplicateBotController = async (req, res) => {
       stats: {},
     });
 
-    invalidateBotCache(found.userId);
+    invalidateBotCache(found.accountKey);
     return res.status(201).json({ status: "success", data: copy });
   } catch (err) {
     console.error("Error duplicating bot:", err.message);
@@ -305,7 +332,7 @@ export const setBotStatusController = async (req, res) => {
       { new: true },
     ).lean();
 
-    invalidateBotCache(found.userId);
+    invalidateBotCache(found.accountKey);
     return res.status(200).json({ status: "success", data: bot });
   } catch (err) {
     console.error("Error setting bot status:", err.message);
@@ -346,7 +373,7 @@ export const attachBotGroupController = async (req, res) => {
       { new: true },
     ).lean();
 
-    invalidateBotCache(found.userId, jid);
+    invalidateBotCache(found.accountKey, jid);
     return res.status(200).json({ status: "success", data: bot });
   } catch (err) {
     console.error("Error attaching bot to group:", err.message);
@@ -368,7 +395,7 @@ export const detachBotGroupController = async (req, res) => {
       { new: true },
     ).lean();
 
-    invalidateBotCache(found.userId, jid);
+    invalidateBotCache(found.accountKey, jid);
     return res.status(200).json({ status: "success", data: bot });
   } catch (err) {
     console.error("Error detaching bot from group:", err.message);
@@ -385,7 +412,8 @@ export const groupBotsController = async (req, res) => {
     if (!userId) return;
 
     const jid = String(req.params.jid ?? "").trim();
-    const bots = await getBotsForGroup(userId, jid);
+    // Bots of THIS number only — each account has its own bot list.
+    const bots = await getBotsForGroup(buildWaKey(userId, accountOf(req)), jid);
 
     const attached = (bots || []).map((b) => ({
       _id: b._id,
@@ -398,6 +426,7 @@ export const groupBotsController = async (req, res) => {
 
     const others = await Bot.find({
       owner: userId,
+      accountId: accountOf(req),
       groups: { $not: { $elemMatch: { jid, enabled: true } } },
     })
       .select("name emoji status")

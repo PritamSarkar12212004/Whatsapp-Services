@@ -10,8 +10,14 @@ import { useMongoAuthState } from "./authState.js";
 import { setupGroupAutomation } from "./groupAutomation.service.js";
 import whatsappConnectionLog from "../../logs/connections/whatsappConnectionLog.js";
 import WhatsAppSession from "../../models/whatsapp/whatsappSession.model.js";
+import WhatsappAccount from "../../models/whatsapp/whatsappAccount.model.js";
 import contactSyncService from "../../services/messaging/contactSync.service.js";
 import { applyReceipts, applyGroupReceipts } from "./receipts.js";
+import {
+  parseWaKey,
+  folderSafeKey,
+  PRIMARY_ACCOUNT_ID,
+} from "../../utils/whatsapp/accountKey.js";
 
 const AUTH_BASE_FOLDER = path.join(
   path.resolve(),
@@ -20,7 +26,9 @@ const AUTH_BASE_FOLDER = path.join(
 
 /**
  * Central WhatsApp Session Manager.
- * Maintains a Map<userId, session> where each session has exactly ONE Baileys socket.
+ * Maintains a Map<key, session> where each session has exactly ONE Baileys
+ * socket. A key is the login's primary number (`userId`) or one of the extra
+ * numbers they linked (`userId::accountId`) — see utils/whatsapp/accountKey.js.
  */
 const sessions = new Map();
 
@@ -54,7 +62,9 @@ const withTimeout = (ms, promise, label) =>
     }),
   ]);
 
-const getAuthFolder = (userId) => path.join(AUTH_BASE_FOLDER, userId);
+/** Legacy auth folder for a key — only used for the one-time disk import. */
+const getAuthFolder = (key) =>
+  path.join(AUTH_BASE_FOLDER, folderSafeKey(key));
 
 const getSession = (userId) => sessions.get(userId);
 
@@ -165,15 +175,42 @@ const teardownSocket = (session) => {
   session.generation = (session.generation || 0) + 1;
 };
 
-const updateDbStatus = async (userId, status, extra = {}) => {
+const updateDbStatus = async (key, status, extra = {}) => {
+  const { userId, accountId } = parseWaKey(key);
+
   try {
     await WhatsAppSession.findOneAndUpdate(
-      { userId },
-      { sessionId: userId.toString(), status, ...extra },
+      { userId, accountId: accountId ?? PRIMARY_ACCOUNT_ID },
+      { sessionId: String(key), status, ...extra },
       { upsert: true, new: true },
     );
   } catch (err) {
-    console.error(`[Baileys] DB status update error for ${userId}:`, err.message);
+    console.error(`[Baileys] DB status update error for ${key}:`, err.message);
+  }
+};
+
+/**
+ * Keep the account row in step with the socket, so the number's label, phone
+ * number and last known status survive a restart (the accounts screen shows
+ * these before any socket exists).
+ */
+const rememberAccountStatus = async (key, status, extra = {}) => {
+  const { userId, accountId } = parseWaKey(key);
+
+  try {
+    await WhatsappAccount.updateOne(
+      { userId, accountId: accountId ?? PRIMARY_ACCOUNT_ID },
+      {
+        $set: { status, ...extra },
+        $setOnInsert: { isPrimary: !accountId }, // accountId lives in the filter
+      },
+      { upsert: true },
+    );
+  } catch (err) {
+    console.error(
+      `[Baileys] Account row update error for ${key}:`,
+      err.message,
+    );
   }
 };
 
@@ -243,7 +280,13 @@ const connect = async (userId, { force = false } = {}) => {
 // TODO(whatsapp): initializeSocket is ~200 lines of socket setup + event
 //   wiring. Split into ./socket/initialize.js + ./socket/eventHandlers.js
 //   when a unit-test seam is introduced (the handlers close over session).
-const initializeSocket = async (userId, session) => {
+const initializeSocket = async (key, session) => {
+  // `key` is the account the socket belongs to; the CRM side (contacts,
+  // messages, receipts) is still scoped to the login itself, so those calls
+  // get the plain user id.
+  const { userId, accountId } = parseWaKey(key);
+  const isPrimaryAccount = !accountId;
+
   // Every init owns a generation number. If the session is torn down and
   // rebuilt while we are waiting on Mongo/WhatsApp, this run must not touch the
   // session any more (otherwise a slow init would overwrite the fresh socket).
@@ -276,7 +319,7 @@ const initializeSocket = async (userId, session) => {
       ),
     );
     session.status = "error";
-    await updateDbStatus(userId, "error");
+    await updateDbStatus(key, "error");
     return null;
   }
 
@@ -350,8 +393,8 @@ const initializeSocket = async (userId, session) => {
   session.socket = sock;
   session.status = "connecting";
   session.connectingSince = Date.now();
-  await updateDbStatus(userId, "connecting");
-  armStuckWatchdog(userId, session);
+  await updateDbStatus(key, "connecting");
+  armStuckWatchdog(key, session);
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -364,13 +407,25 @@ const initializeSocket = async (userId, session) => {
       !session.contactSyncScheduled
     ) {
       session.contactSyncScheduled = true;
+
+      // The contact book belongs to the login, so it is filled from the
+      // primary number only — an extra number's chats are not mixed into it.
+      if (!isPrimaryAccount) {
+        console.log(
+          chalk.cyan(
+            `[Contacts Sync] Skipped for ${key} — contacts sync with the primary number`,
+          ),
+        );
+        return;
+      }
+
       console.log(
         `[Contacts Sync] Starting contact synchronization for user ${userId}`,
       );
       contactSyncService
         .syncContactsOnConnect(userId, sock, {
           reason: "connect",
-          authFolder: getAuthFolder(userId),
+          authFolder: getAuthFolder(key),
         })
         .catch((error) => {
           console.error(
@@ -393,9 +448,10 @@ const initializeSocket = async (userId, session) => {
       session.connectingSince = null;
       clearStuckWatchdog(session);
       console.log(
-        chalk.cyan(`[Baileys] QR generated for user ${userId}`),
+        chalk.cyan(`[Baileys] QR generated for ${key}`),
       );
-      await updateDbStatus(userId, "qr_required");
+      await updateDbStatus(key, "qr_required");
+      await rememberAccountStatus(key, "qr_required");
     }
 
     if (connection === "close") {
@@ -407,24 +463,23 @@ const initializeSocket = async (userId, session) => {
       session.initialSyncDone = false;
       contactSyncService.clearUserCache(userId);
 
-      console.log(
-        chalk.red(`[Baileys] WhatsApp disconnected for user ${userId}`),
-      );
+      console.log(chalk.red(`[Baileys] WhatsApp disconnected for ${key}`));
       console.log(
         chalk.yellow(`[Baileys] Disconnect reason code: ${statusCode}`),
       );
 
       // Permanent logout → clean up, do NOT reconnect
       if (statusCode === DisconnectReason.loggedOut) {
-        console.log(
-          chalk.red(`[Baileys] User ${userId} logged out permanently`),
-        );
+        console.log(chalk.red(`[Baileys] ${key} logged out permanently`));
         session.status = "logged_out";
-        await updateDbStatus(userId, "logged_out", {
+        await updateDbStatus(key, "logged_out", {
           lastDisconnectedAt: new Date(),
         });
-        await clearAuthState(userId);
-        sessions.delete(userId);
+        await rememberAccountStatus(key, "logged_out", {
+          lastDisconnectedAt: new Date(),
+        });
+        await clearAuthState(key);
+        sessions.delete(key);
         return;
       }
 
@@ -437,7 +492,7 @@ const initializeSocket = async (userId, session) => {
         session.status = "disconnected";
         session.conflictRetries = (session.conflictRetries || 0) + 1;
 
-        await updateDbStatus(userId, "disconnected", {
+        await updateDbStatus(key, "disconnected", {
           lastDisconnectedAt: new Date(),
         });
 
@@ -455,7 +510,7 @@ const initializeSocket = async (userId, session) => {
           session.reconnecting = true;
           session.reconnectTimer = setTimeout(() => {
             session.reconnecting = false;
-            connect(userId);
+            connect(key);
           }, retryDelay);
         } else {
           console.log(
@@ -470,7 +525,7 @@ const initializeSocket = async (userId, session) => {
 
       // Temporary disconnects → controlled reconnect
       session.status = "disconnected";
-      await updateDbStatus(userId, "disconnected", {
+      await updateDbStatus(key, "disconnected", {
         lastDisconnectedAt: new Date(),
       });
 
@@ -489,7 +544,7 @@ const initializeSocket = async (userId, session) => {
         );
         session.reconnectTimer = setTimeout(() => {
           session.reconnecting = false;
-          connect(userId);
+          connect(key);
         }, delay);
       }
     } else if (connection === "open") {
@@ -501,11 +556,13 @@ const initializeSocket = async (userId, session) => {
       clearStuckWatchdog(session);
       const phone = sock.user?.id?.split(":")[0] || "Unknown";
       console.log(
-        chalk.green(
-          `[Baileys] WhatsApp connected for user ${userId} (${phone})`,
-        ),
+        chalk.green(`[Baileys] WhatsApp connected for ${key} (${phone})`),
       );
-      await updateDbStatus(userId, "connected", {
+      await updateDbStatus(key, "connected", {
+        phoneNumber: phone,
+        lastConnectedAt: new Date(),
+      });
+      await rememberAccountStatus(key, "connected", {
         phoneNumber: phone,
         lastConnectedAt: new Date(),
       });
@@ -562,7 +619,9 @@ const initializeSocket = async (userId, session) => {
   });
 
   // Group automation engine (moderation, auto-reply, commands, welcome/goodbye).
-  setupGroupAutomation(sock, userId);
+  // It receives the account KEY so the runtime can scope bots + group rules to
+  // the number that is actually connected.
+  setupGroupAutomation(sock, key);
 
   return sock;
 };
@@ -655,6 +714,9 @@ const disconnect = async (userId) => {
   await updateDbStatus(userId, "disconnected", {
     lastDisconnectedAt: new Date(),
   });
+  await rememberAccountStatus(userId, "disconnected", {
+    lastDisconnectedAt: new Date(),
+  });
 
   sessions.delete(userId);
   console.log(
@@ -736,11 +798,10 @@ const restoreSessions = async () => {
   try {
     const activeSessions = await WhatsAppSession.find({ status: "connected" });
     for (const session of activeSessions) {
-      const userId = session.userId.toString();
-      console.log(
-        chalk.cyan(`[Baileys] Restoring session for user ${userId}`),
-      );
-      connect(userId);
+      // `sessionId` holds the account key (userId or userId::accountId).
+      const key = session.sessionId || session.userId.toString();
+      console.log(chalk.cyan(`[Baileys] Restoring session for ${key}`));
+      connect(key);
     }
     if (activeSessions.length === 0) {
       console.log(

@@ -21,7 +21,7 @@ const whatsappGroupDetailController = async (req, res) => {
       });
     }
 
-    const sock = getSocket(userId);
+    const sock = getSocket(req.waKey || userId);
 
     if (!sock) {
       return res.status(400).json({

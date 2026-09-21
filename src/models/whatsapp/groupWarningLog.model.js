@@ -8,6 +8,9 @@ const groupWarningLogSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    /** Which WhatsApp number logged this warning (null = primary number). */
+    accountId: { type: String, default: null },
+
     groupJid: { type: String, required: true },
     groupSubject: { type: String, default: "" },
     memberJid: { type: String, required: true },

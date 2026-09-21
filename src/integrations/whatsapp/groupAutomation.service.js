@@ -8,6 +8,7 @@ import {
   handleBotMemberEvent,
   getBotsForGroup,
 } from "./botRuntime/botRuntime.service.js";
+import { parseWaKey, buildWaKey } from "../../utils/whatsapp/accountKey.js";
 import {
   getText,
   getMemberNumber,
@@ -35,18 +36,23 @@ const SCHEDULER_INTERVAL_MS = 30000;
 
 // ==================== HELPERS ====================
 
-const getManager = async (userId, groupJid) => {
-  const key = `${userId}:${groupJid}`;
-  if (managerCache.has(key)) return managerCache.get(key);
+/**
+ * `accountKey` is the WhatsApp account key (userId or userId::accountId), so
+ * every group rule belongs to the number that actually received the message.
+ */
+const getManager = async (accountKey, groupJid) => {
+  const cacheKey = `${accountKey}:${groupJid}`;
+  if (managerCache.has(cacheKey)) return managerCache.get(cacheKey);
+  const { userId, accountId } = parseWaKey(accountKey);
   const manager = await groupManagerModel
-    .findOne({ userId, groupJid })
+    .findOne({ userId, accountId, groupJid })
     .lean();
-  managerCache.set(key, manager || null);
+  managerCache.set(cacheKey, manager || null);
   return manager || null;
 };
 
-export const invalidateManagerCache = (userId, groupJid) => {
-  managerCache.delete(`${userId}:${groupJid}`);
+export const invalidateManagerCache = (accountKey, groupJid) => {
+  managerCache.delete(`${accountKey}:${groupJid}`);
 };
 
 /** Cheap "is any bot watching this group?" check for the message hot path. */
@@ -63,7 +69,7 @@ const hasBotsForGroup = async (userId, groupJid) => {
 
 const handleViolation = async (
   sock,
-  userId,
+  accountKey,
   manager,
   groupJid,
   senderJid,
@@ -71,6 +77,7 @@ const handleViolation = async (
   reason,
 ) => {
   try {
+    const { userId, accountId } = parseWaKey(accountKey);
     const settings = manager.settings || {};
     const strikeLimit = Math.max(1, Number(settings.strikeLimit) || 3);
     const memberNumber = getMemberNumber(sock, senderJid);
@@ -78,6 +85,7 @@ const handleViolation = async (
 
     const previous = await groupWarningLogModel.countDocuments({
       userId,
+      accountId,
       groupJid,
       memberJid: senderJid,
     });
@@ -104,6 +112,7 @@ const handleViolation = async (
 
     await groupWarningLogModel.create({
       userId,
+      accountId,
       groupJid,
       groupSubject: manager.groupSubject || "",
       memberJid: senderJid,
@@ -126,6 +135,7 @@ const handleViolation = async (
         await sock.groupParticipantsUpdate(groupJid, [senderJid], "remove");
         await groupWarningLogModel.create({
           userId,
+          accountId,
           groupJid,
           groupSubject: manager.groupSubject || "",
           memberJid: senderJid,
@@ -415,7 +425,8 @@ const runDueSchedules = async () => {
 
       // Lazy import to avoid a circular dependency at module init.
       const { getSocket } = await import("./manager.js");
-      const sock = getSocket(manager.userId.toString());
+      // Schedules belong to the number that owns the group rules.
+      const sock = getSocket(buildWaKey(manager.userId, manager.accountId));
       if (!sock) continue;
 
       for (const schedule of due) {

@@ -13,7 +13,8 @@ const whatsappDisconnectController = async (req, res) => {
 
     // FULL logout — device WhatsApp servers se unlink + auth state delete.
     // Next connect QR scan require karega. MongoDB data safe rehta hai.
-    await logout(userId);
+    // Unlinks whichever number the client has selected.
+    await logout(req.waKey || userId);
 
     return res.status(200).json({
       status: "success",

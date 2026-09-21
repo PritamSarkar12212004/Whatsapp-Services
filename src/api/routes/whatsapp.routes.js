@@ -1,6 +1,13 @@
 import express from "express";
 import asyncHandler from "express-async-handler";
 import authMiddleware from "../../middleware/auth.middleware.js";
+import whatsappAccountMiddleware from "../../middleware/whatsappAccount.middleware.js";
+import {
+  listAccountsController,
+  createAccountController,
+  updateAccountController,
+  deleteAccountController,
+} from "../controllers/whatsapp/account.controller.js";
 import whatsappConnectController from "../controllers/whatsapp/connect.controller.js";
 import whatsappQRController from "../controllers/whatsapp/qr.controller.js";
 import whatsappStatusController from "../controllers/whatsapp/status.controller.js";
@@ -36,6 +43,18 @@ import {
 const route = express.Router();
 
 route.use(authMiddleware);
+
+// ---- Accounts (one login, several numbers) ----
+// Declared before the account middleware so managing the numbers themselves
+// never depends on which one is selected.
+route.get("/accounts", asyncHandler(listAccountsController));
+route.post("/accounts", asyncHandler(createAccountController));
+route.patch("/accounts/:accountId", asyncHandler(updateAccountController));
+route.delete("/accounts/:accountId", asyncHandler(deleteAccountController));
+
+// Everything below works on the number sent as `x-wa-account` (default: the
+// primary number), so each number keeps its own session, QR and data.
+route.use(whatsappAccountMiddleware);
 
 route.post("/connect", asyncHandler(whatsappConnectController));
 route.get("/qr", asyncHandler(whatsappQRController));

@@ -15,7 +15,7 @@ const getConnectedSocket = (req, res) => {
     return null;
   }
 
-  const sock = getSocket(userId);
+  const sock = getSocket(req.waKey || userId);
 
   if (!sock) {
     res.status(400).json({

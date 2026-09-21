@@ -14,6 +14,7 @@
 
 import chalk from "chalk";
 import Bot from "../../../models/whatsapp/bot.model.js";
+import { parseWaKey } from "../../../utils/whatsapp/accountKey.js";
 import {
   applyVars,
   pickTrigger,
@@ -47,26 +48,41 @@ const prune = (map, ttl) => {
   }
 };
 
-export const invalidateBotCache = (userId, groupJid) => {
+/**
+ * Drop the cached bot list.
+ *
+ * @param {String} accountKey account key (use one of the raw parts to clear a
+ *   whole login: `invalidateBotCache("<userId>")` and
+ *   `invalidateBotCache("<userId>::<accountId>")` both match their own rows).
+ */
+export const invalidateBotCache = (accountKey, groupJid) => {
   if (!groupJid) {
     for (const key of botCache.keys()) {
-      if (key.startsWith(`${userId}:`)) botCache.delete(key);
+      if (key.startsWith(`${accountKey}:`)) botCache.delete(key);
     }
     return;
   }
-  botCache.delete(`${userId}:${groupJid}`);
+  botCache.delete(`${accountKey}:${groupJid}`);
 };
 
 /** Bots that are active AND switched on for this group, lowest priority first. */
-export const getBotsForGroup = async (userId, groupJid) => {
-  const key = `${userId}:${groupJid}`;
-  const hit = botCache.get(key);
+/**
+ * Bots watching one group.
+ *
+ * @param {String} accountKey WhatsApp account key (userId or userId::accountId)
+ * @param {String} groupJid
+ */
+export const getBotsForGroup = async (accountKey, groupJid) => {
+  const { userId, accountId } = parseWaKey(accountKey);
+  const cacheKey = `${accountKey}:${groupJid}`;
+  const hit = botCache.get(cacheKey);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.bots;
 
   let bots = [];
   try {
     bots = await Bot.find({
       owner: userId,
+      accountId,
       status: "active",
       groups: { $elemMatch: { jid: groupJid, enabled: true } },
     }).lean();
@@ -74,7 +90,7 @@ export const getBotsForGroup = async (userId, groupJid) => {
     console.error(chalk.yellow(`[Bot] Lookup failed: ${err.message}`));
   }
 
-  botCache.set(key, { bots, at: Date.now() });
+  botCache.set(cacheKey, { bots, at: Date.now() });
   return bots;
 };
 

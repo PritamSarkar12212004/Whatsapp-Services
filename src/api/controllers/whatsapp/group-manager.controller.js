@@ -1,6 +1,7 @@
 import groupManagerModel from "../../../models/whatsapp/groupManager.model.js";
 import groupWarningLogModel from "../../../models/whatsapp/groupWarningLog.model.js";
 import { invalidateManagerCache } from "../../../integrations/whatsapp/groupAutomation.service.js";
+import { buildWaKey } from "../../../utils/whatsapp/accountKey.js";
 
 const RULE_TYPES = [
   "welcome",
@@ -31,7 +32,17 @@ const requireGroupId = (req, res) => {
     return null;
   }
 
-  return { userId, groupJid };
+  // null = the primary number, so rules written before accounts existed still
+  // belong to it (and requests without the header keep working).
+  const accountId = req.waAccountId ?? null;
+
+  return {
+    userId,
+    accountId,
+    // The runtime caches group rules by account key, not by user id.
+    accountKey: req.waKey || buildWaKey(userId, accountId),
+    groupJid,
+  };
 };
 
 const sanitizeRules = (rules) => {
@@ -71,6 +82,7 @@ const getGroupManagerController = async (req, res) => {
 
     const manager = await groupManagerModel.findOne({
       userId: ids.userId,
+      accountId: ids.accountId,
       groupJid: ids.groupJid,
     });
 
@@ -96,9 +108,14 @@ const saveGroupManagerController = async (req, res) => {
       req.body || {};
 
     const manager = await groupManagerModel.findOneAndUpdate(
-      { userId: ids.userId, groupJid: ids.groupJid },
+      {
+        userId: ids.userId,
+        accountId: ids.accountId,
+        groupJid: ids.groupJid,
+      },
       {
         $set: {
+          accountId: ids.accountId,
           groupSubject: String(groupSubject ?? ""),
           settings: {
             warningMessage: String(
@@ -123,7 +140,7 @@ const saveGroupManagerController = async (req, res) => {
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
 
-    invalidateManagerCache(ids.userId, ids.groupJid);
+    invalidateManagerCache(ids.accountKey, ids.groupJid);
 
     return res.status(200).json({
       status: "success",
@@ -145,10 +162,11 @@ const deleteGroupManagerController = async (req, res) => {
 
     const result = await groupManagerModel.deleteOne({
       userId: ids.userId,
+      accountId: ids.accountId,
       groupJid: ids.groupJid,
     });
 
-    invalidateManagerCache(ids.userId, ids.groupJid);
+    invalidateManagerCache(ids.accountKey, ids.groupJid);
 
     return res.status(200).json({
       status: "success",
@@ -169,7 +187,11 @@ const getGroupWarningsController = async (req, res) => {
     if (!ids) return;
 
     const warnings = await groupWarningLogModel
-      .find({ userId: ids.userId, groupJid: ids.groupJid })
+      .find({
+        userId: ids.userId,
+        accountId: ids.accountId,
+        groupJid: ids.groupJid,
+      })
       .sort({ createdAt: -1 })
       .limit(100)
       .lean();

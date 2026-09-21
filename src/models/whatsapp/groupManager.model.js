@@ -31,6 +31,12 @@ const scheduleSchema = new mongoose.Schema(
 
 const groupManagerSchema = new mongoose.Schema(
   {
+    /** Which WhatsApp number these rules belong to (null = primary number). */
+    accountId: {
+      type: String,
+      default: null,
+    },
+
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "userprofile",
@@ -57,6 +63,9 @@ const groupManagerSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-groupManagerSchema.index({ userId: 1, groupJid: 1 }, { unique: true });
+groupManagerSchema.index(
+  { userId: 1, accountId: 1, groupJid: 1 },
+  { unique: true },
+);
 
 export default mongoose.model("groupmanager", groupManagerSchema);

@@ -11,7 +11,7 @@ const whatsappQRController = async (req, res) => {
       });
     }
 
-    const qr = getQR(userId);
+    const qr = getQR(req.waKey || userId);
 
     if (!qr) {
       return res.status(200).json({

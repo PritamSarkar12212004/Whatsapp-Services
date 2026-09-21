@@ -25,8 +25,11 @@ const whatsappConnectController = async (req, res) => {
       });
     }
 
+    // Connects whichever number the client has selected (primary by default).
+    const key = req.waKey || userId;
+
     const force = readForce(req);
-    const currentStatus = getStatus(userId);
+    const currentStatus = getStatus(key);
 
     // Already connected
     if (currentStatus.connected) {
@@ -60,9 +63,9 @@ const whatsappConnectController = async (req, res) => {
     }
 
     // Start (or restart) the connection
-    await connect(userId, { force: force || stuck });
+    await connect(key, { force: force || stuck });
 
-    const updatedStatus = getStatus(userId);
+    const updatedStatus = getStatus(key);
 
     return res.status(200).json({
       status: "success",

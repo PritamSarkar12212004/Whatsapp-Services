@@ -11,7 +11,9 @@ const whatsappStatusController = async (req, res) => {
       });
     }
 
-    const status = getStatus(userId);
+    // The selected number — `req.waKey` is the primary number when the client
+    // did not ask for a specific one.
+    const status = getStatus(req.waKey || userId);
 
     return res.status(200).json({
       status: status.status,

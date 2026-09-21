@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { clearMongoAuthState, SYSTEM_OWNER_KEY } from "./authState.js";
+import { folderSafeKey } from "../../utils/whatsapp/accountKey.js";
 
 /**
  * LEGACY on-disk auth folder.
@@ -43,7 +44,8 @@ const clearAuthState = async (userId) => {
   // 2. Legacy disk copy.
   try {
     if (userId) {
-      const userAuthPath = path.join(AUTH_BASE_FOLDER, userId);
+      // Account keys look like `userId::accountId`; folders use `__` instead.
+      const userAuthPath = path.join(AUTH_BASE_FOLDER, folderSafeKey(userId));
       if (fs.existsSync(userAuthPath)) {
         fs.rmSync(userAuthPath, { recursive: true, force: true });
         console.log(`✅ WhatsApp auth folder removed for user ${userId}`);

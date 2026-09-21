@@ -6,8 +6,17 @@ const whatsappSessionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "userprofile",
       required: true,
-      unique: true,
       index: true,
+    },
+
+    /**
+     * Which of the user's numbers this session belongs to.
+     * null = the primary number (and every session written before accounts
+     * existed), so old rows keep working unchanged.
+     */
+    accountId: {
+      type: String,
+      default: null,
     },
 
     phoneNumber: {
@@ -15,6 +24,7 @@ const whatsappSessionSchema = new mongoose.Schema(
       default: null,
     },
 
+    /** The full account key — `userId` or `userId::accountId`. */
     sessionId: {
       type: String,
       required: true,
@@ -39,6 +49,9 @@ const whatsappSessionSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+// One session row per number (this replaces the old unique index on userId).
+whatsappSessionSchema.index({ userId: 1, accountId: 1 }, { unique: true });
 
 const WhatsAppSession = mongoose.model(
   "WhatsAppSession",
