@@ -154,7 +154,7 @@ const accountOf = (req) => req.waAccountId ?? null;
 
 /** The account key — what the runtime and its caches are indexed by. */
 const accountKeyOf = (req) =>
-  req.waKey || `${requireOwner(req, {}) ?? req.user?.userId}`;
+  req.waKey || buildWaKey(req.user?.userId, accountOf(req));
 
 const findOwned = async (req, res) => {
   const userId = requireOwner(req, res);

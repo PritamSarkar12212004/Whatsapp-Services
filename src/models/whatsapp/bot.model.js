@@ -128,6 +128,16 @@ const botSchema = new mongoose.Schema(
       index: true,
     },
 
+    /**
+     * Which WhatsApp number this bot belongs to.
+     * null = the primary number, which is also what every bot created before
+     * multi-account carries (so bots never disappeared from the old number).
+     */
+    accountId: {
+      type: String,
+      default: null,
+    },
+
     // ---- Basic information ----
     name: { type: String, required: true, trim: true },
     description: { type: String, default: "" },
@@ -177,6 +187,8 @@ const botSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// One bot list per WhatsApp number (null = the primary number).
+botSchema.index({ owner: 1, accountId: 1 });
 botSchema.index({ owner: 1, name: 1 });
 botSchema.index({ owner: 1, "groups.jid": 1 });
 
