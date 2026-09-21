@@ -32,6 +32,10 @@ const createApp = () => {
         "Content-Type",
         "Authorization",
         "ngrok-skip-browser-warning",
+        // Which WhatsApp number a request is for (multi-account switcher).
+        // A header missing here fails the preflight, so the browser never even
+        // sends the request — the app just shows "network error".
+        "x-wa-account",
       ],
     }),
   );
