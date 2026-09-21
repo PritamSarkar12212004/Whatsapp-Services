@@ -6,6 +6,10 @@ import Contact from "../../../models/messaging/contact.model.js";
 import ContactActivity from "../../../models/messaging/contactActivity.model.js";
 import { getSocket } from "../../../integrations/whatsapp/manager.js";
 import { lastNDays } from "./analytics/analytics.helpers.js";
+import {
+  attachCampaignCounts,
+  isDevCampaign,
+} from "../../../services/messaging/campaign/campaign.counts.js";
 
 // See: ./analytics/analytics.helpers.js (date-range helpers)
 
@@ -245,21 +249,30 @@ const analyticsController = {
         }))
         .sort((a, b) => b.value - a.value);
 
-      const topCampaigns = await Campaign.aggregate([
-        { $match: { owner: ownerObjectId } },
-        { $sort: { "statistics.sent": -1 } },
-        { $limit: 6 },
-        {
-          $project: {
-            name: 1,
-            status: 1,
-            sent: { $ifNull: ["$statistics.sent", 0] },
-            delivered: { $ifNull: ["$statistics.delivered", 0] },
-            read: { $ifNull: ["$statistics.read", 0] },
-            failed: { $ifNull: ["$statistics.failed", 0] },
-          },
-        },
-      ]);
+      // The stored `statistics.*` counters only move while a campaign actually
+      // sends (and never for dev campaigns, which are pure API switches), so
+      // rank by the live numbers: recipient rows for normal campaigns, API
+      // messages for dev ones — the same helper the campaigns table uses.
+      const ownerCampaigns = await Campaign.find({ owner: ownerObjectId })
+        .populate("template", "devMode")
+        .exec();
+      const campaignsWithCounts = await attachCampaignCounts(ownerCampaigns);
+
+      const topCampaigns = campaignsWithCounts
+        .map((c) => {
+          const isDev = isDevCampaign(c);
+          const stats = isDev ? c.devStats || {} : c.statistics || {};
+          return {
+            name: c.name,
+            status: c.status,
+            sent: stats.sent || 0,
+            delivered: stats.delivered || 0,
+            read: stats.read || 0,
+            failed: stats.failed || 0,
+          };
+        })
+        .sort((a, b) => b.sent - a.sent)
+        .slice(0, 6);
 
       // ------------------------------------------------------------------
       // 5. Message type breakdown

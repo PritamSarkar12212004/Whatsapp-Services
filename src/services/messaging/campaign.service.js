@@ -13,10 +13,7 @@ import {
   previewMessage,
 } from "./campaign/campaign.audience.js";
 import { getDevStats } from "./campaign/campaign.stats.js";
-import { getMessageModel } from "./campaign/campaign.helpers.js";
-
-/** Recipient statuses that count as "sent" (a delivered/read row was sent too). */
-const SENT_LIKE = ["sent", "delivered", "read"];
+import { attachCampaignCounts } from "./campaign/campaign.counts.js";
 
 // See: ./campaign/campaign.helpers.js (status transitions, model loaders)
 // See: ./campaign/campaign.audience.js (audience + previews)
@@ -32,138 +29,9 @@ const campaignService = {
       .sort({ createdAt: -1 })
       .exec();
 
-    return this.attachListStats(campaigns);
-  },
-
-  /**
-   * Attach the numbers the campaigns table shows (Sent / Total per row).
-   *
-   * The table used to read the denormalised `statistics.*` counters, which only
-   * move while a campaign is actually being sent — so campaigns that ran before
-   * the counters existed, and API-driven dev campaigns (no recipients at all),
-   * showed 0 forever. Here the numbers come from the real sources:
-   *   • normal campaigns → CampaignRecipient rows (same as the detail drawer)
-   *   • dev campaigns    → Message rows created by API calls (source: "api")
-   *
-   * Two extra queries cover the whole page, so this stays cheap.
-   */
-  async attachListStats(campaigns = []) {
-    if (!campaigns.length) return campaigns;
-
-    // The client treats a campaign as "dev" when its template has devMode —
-    // older campaigns can predate the campaign.devTemplate flag, so accept both
-    // or their numbers would be looked up from the wrong source.
-    const isDevCampaign = (c) => !!c.devTemplate || !!c.template?.devMode;
-
-    const normalIds = campaigns
-      .filter((c) => !isDevCampaign(c))
-      .map((c) => c._id);
-    const devTemplateIds = campaigns
-      .filter((c) => isDevCampaign(c))
-      .map((c) => c.template?._id || c.template)
-      .filter(Boolean);
-
-    const [recipientRows, devRows] = await Promise.all([
-      normalIds.length
-        ? CampaignRecipient.aggregate([
-            { $match: { campaign: { $in: normalIds } } },
-            {
-              $group: {
-                _id: { campaign: "$campaign", status: "$status" },
-                count: { $sum: 1 },
-              },
-            },
-          ]).exec()
-        : [],
-      devTemplateIds.length
-        ? (async () => {
-            const Message = await getMessageModel();
-            return Message.aggregate([
-              {
-                $match: {
-                  owner: new mongoose.Types.ObjectId(String(campaigns[0].owner)),
-                  template: { $in: devTemplateIds.map((t) => new mongoose.Types.ObjectId(String(t))) },
-                  source: "api",
-                },
-              },
-              {
-                $group: {
-                  _id: "$template",
-                  total: { $sum: 1 },
-                  sent: {
-                    $sum: { $cond: [{ $in: ["$status", SENT_LIKE] }, 1, 0] },
-                  },
-                  failed: {
-                    $sum: { $cond: [{ $eq: ["$status", "failed"] }, 1, 0] },
-                  },
-                  queued: {
-                    $sum: {
-                      $cond: [
-                        {
-                          $in: [
-                            "$status",
-                            ["queued", "sending", "scheduled", "pending"],
-                          ],
-                        },
-                        1,
-                        0,
-                      ],
-                    },
-                  },
-                },
-              },
-            ]).exec();
-          })()
-        : [],
-    ]);
-
-    const byCampaign = new Map();
-    for (const row of recipientRows) {
-      const key = String(row._id.campaign);
-      const bucket =
-        byCampaign.get(key) ||
-        { total: 0, sent: 0, delivered: 0, read: 0, failed: 0, skipped: 0 };
-      const status = row._id.status;
-      bucket.total += row.count;
-      if (SENT_LIKE.includes(status)) bucket.sent += row.count;
-      if (["delivered", "read"].includes(status)) bucket.delivered += row.count;
-      if (status === "read") bucket.read += row.count;
-      if (status === "failed") bucket.failed += row.count;
-      if (status === "skipped") bucket.skipped += row.count;
-      byCampaign.set(key, bucket);
-    }
-
-    const byTemplate = new Map(devRows.map((r) => [String(r._id), r]));
-
-    return campaigns.map((campaign) => {
-      const doc = campaign.toObject ? campaign.toObject() : campaign;
-
-      // Dev campaigns: report API traffic instead of recipient counters.
-      if (isDevCampaign(campaign)) {
-        const templateId = String(campaign.template?._id || campaign.template);
-        const dev = byTemplate.get(templateId);
-        if (dev) {
-          doc.devStats = {
-            ...(doc.devStats || {}),
-            // Stored counter when it exists, otherwise every API message row.
-            apiCalls: doc.devStats?.apiCalls || dev.total,
-            sent: dev.sent,
-            failed: dev.failed,
-            queued: dev.queued,
-            total: dev.total,
-          };
-        }
-        return doc;
-      }
-
-      // Normal campaigns: recipient rows are the source of truth. Fall back to
-      // the stored counters when a campaign has no recipients yet.
-      const live = byCampaign.get(String(campaign._id));
-      if (live) {
-        doc.statistics = { ...(doc.statistics || {}), ...live };
-      }
-      return doc;
-    });
+    // Fill Sent / Total from the real sources (recipients + dev API traffic)
+    // instead of the denormalised statistics counters — see campaign.counts.js.
+    return attachCampaignCounts(campaigns);
   },
 
   async getCampaign(ownerId, id) {

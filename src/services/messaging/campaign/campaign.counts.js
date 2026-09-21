@@ -29,6 +29,52 @@ const PENDING_LIKE = ["queued", "sending", "scheduled", "pending"];
 export const isDevCampaign = (campaign) =>
   !!campaign?.devTemplate || !!campaign?.template?.devMode;
 
+/**
+ * Pick the freshest numbers for one campaign.
+ *
+ * `Campaign.statistics` is a denormalised counter that can be empty even though
+ * real activity exists (older campaigns, API sends, counters written by an
+ * earlier version), so it is only the last resort:
+ *
+ *   1. recipients  — whatever the campaign actually did to its audience
+ *   2. messages    — Message rows carrying this campaign id (covers campaigns
+ *                    whose recipient rows were never created / got cleaned up)
+ *   3. stored      — the denormalised `statistics` counters
+ */
+export const pickStatistics = ({ recipients, messages, stored } = {}) => {
+  const base = { ...emptyStatistics(), ...(stored || {}) };
+  const live = recipients?.total ? recipients : messages?.total ? messages : null;
+  return live ? { ...base, ...live } : base;
+};
+
+/**
+ * The numbers a dev campaign shows in the table.
+ *
+ * Dev templates are "live switches" — every API call increments
+ * `devStats.apiCalls` on the linked campaign (see message.helpers.js), while
+ * per-message rows only exist for calls made after Message got its
+ * `template`/`source` fields. So: use the message rows when they exist, and
+ * otherwise fall back to the call counter rather than showing 0.
+ */
+export const buildDevStatsView = ({ rows, stored, storedApiCalls = 0 } = {}) => {
+  const counters = rows || emptyStatistics();
+  const apiCalls = Math.max(storedApiCalls || 0, counters.total || 0);
+  const hasRows = (counters.total || 0) > 0;
+
+  return {
+    ...(stored || {}),
+    apiCalls,
+    total: apiCalls,
+    // Without rows the exact split is unknown — an accepted call is the best
+    // available answer (failures still show up in the drawer's live stats).
+    sent: hasRows ? counters.sent : apiCalls,
+    delivered: hasRows ? counters.delivered : 0,
+    read: hasRows ? counters.read : 0,
+    failed: hasRows ? counters.failed : 0,
+    queued: hasRows ? Math.max(0, (counters.total || 0) - counters.sent - counters.failed) : 0,
+  };
+};
+
 const emptyStatistics = () => ({
   total: 0,
   sent: 0,
@@ -41,6 +87,9 @@ const emptyStatistics = () => ({
 /**
  * Reduce `[{ _id: { campaign, status }, count }]` to
  * `Map<campaignId, CampaignStatistics>`.
+ *
+ * Used for both sources — CampaignRecipient rows and Message rows — because both
+ * group the same way (`campaign` + `status`).
  */
 export const buildRecipientStats = (rows = []) => {
   const map = new Map();
@@ -75,6 +124,24 @@ export const fetchRecipientStats = async (campaignIds = []) => {
   if (!campaignIds.length) return new Map();
 
   const rows = await CampaignRecipient.aggregate([
+    { $match: { campaign: { $in: campaignIds } } },
+    {
+      $group: {
+        _id: { campaign: "$campaign", status: "$status" },
+        count: { $sum: 1 },
+      },
+    },
+  ]).exec();
+
+  return buildRecipientStats(rows);
+};
+
+/** Message rows carrying a campaign id, grouped the same way as recipients. */
+export const fetchMessageStats = async (campaignIds = []) => {
+  if (!campaignIds.length) return new Map();
+
+  const Message = await getMessageModel();
+  const rows = await Message.aggregate([
     { $match: { campaign: { $in: campaignIds } } },
     {
       $group: {
@@ -139,33 +206,32 @@ export const attachCampaignCounts = async (campaigns = []) => {
     .map((c) => c.template?._id || c.template)
     .filter(Boolean);
 
-  const [recipientStats, devApiStats] = await Promise.all([
+  const [recipientStats, messageStats, devApiStats] = await Promise.all([
     fetchRecipientStats(normalIds),
+    fetchMessageStats(normalIds),
     fetchDevApiStats(ownerId, devTemplateIds),
   ]);
 
   return docs.map((doc) => {
     if (isDevCampaign(doc)) {
       const templateId = String(doc.template?._id || doc.template);
-      const dev = devApiStats.get(templateId);
-      if (dev) {
-        doc.devStats = {
-          ...(doc.devStats || {}),
-          // Stored counter when it exists, otherwise every API message row.
-          apiCalls: doc.devStats?.apiCalls || dev.total,
-          sent: dev.sent,
-          failed: dev.failed,
-          queued: dev.queued,
-          total: dev.total,
-        };
-      }
+      // Always filled — a dev campaign with API calls must never read as 0 just
+      // because its calls predate the Message.template/source fields.
+      doc.devStats = buildDevStatsView({
+        rows: devApiStats.get(templateId),
+        stored: doc.devStats,
+        storedApiCalls: doc.devStats?.apiCalls || 0,
+      });
       return doc;
     }
 
-    // Normal campaigns: recipients are the source of truth. Campaigns without
-    // any recipient rows (drafts) keep their stored counters.
-    const live = recipientStats.get(String(doc._id));
-    if (live) doc.statistics = { ...(doc.statistics || {}), ...live };
+    // Normal campaigns: recipients are the source of truth, Message rows the
+    // backup, stored counters the last resort — see pickStatistics().
+    doc.statistics = pickStatistics({
+      recipients: recipientStats.get(String(doc._id)),
+      messages: messageStats.get(String(doc._id)),
+      stored: doc.statistics,
+    });
     return doc;
   });
 };
@@ -174,7 +240,10 @@ export default {
   isDevCampaign,
   buildRecipientStats,
   buildDevStats,
+  buildDevStatsView,
+  pickStatistics,
   fetchRecipientStats,
+  fetchMessageStats,
   fetchDevApiStats,
   attachCampaignCounts,
 };
