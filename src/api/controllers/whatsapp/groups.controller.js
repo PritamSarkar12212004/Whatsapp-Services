@@ -1,5 +1,78 @@
 import { getSocket } from "../../../integrations/whatsapp/manager.js";
 
+/**
+ * Group pictures are a separate WhatsApp lookup per group, so they are cached
+ * and the batch runs with a small concurrency + a total time budget. A slow
+ * (or missing) picture must never hold the list back — the card just keeps
+ * showing its initials tile.
+ */
+const pictureCache = new Map(); // `${userId}:${jid}` -> { url, at }
+const PICTURE_TTL_MS = 30 * 60 * 1000;
+const MISSING_PICTURE_TTL_MS = 10 * 60 * 1000;
+const PICTURE_CONCURRENCY = 4;
+const PICTURE_LOOKUP_MS = 2500;
+const PICTURE_BUDGET_MS = 4000;
+
+const withTimeout = (promise, ms) => {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("lookup timed out")), ms);
+    }),
+  ]);
+};
+
+const cachedPicture = (userId, jid) => {
+  const hit = pictureCache.get(`${userId}:${jid}`);
+  if (!hit) return { known: false, url: null };
+  const ttl = hit.url ? PICTURE_TTL_MS : MISSING_PICTURE_TTL_MS;
+  if (Date.now() - hit.at > ttl) return { known: false, url: null };
+  return { known: true, url: hit.url };
+};
+
+/**
+ * Fill in the picture of every group, newest lookups first come first served.
+ *
+ * @returns {Promise<Map<String, String|null>>} jid -> picture url (null = none)
+ */
+export const loadGroupPictures = async (sock, userId, jids) => {
+  const out = new Map();
+  const queue = [...jids];
+  const startedAt = Date.now();
+
+  const worker = async () => {
+    while (queue.length) {
+      const jid = queue.shift();
+
+      const cached = cachedPicture(userId, jid);
+      if (cached.known) {
+        out.set(jid, cached.url);
+        continue;
+      }
+
+      // Budget spent — leave this one blank rather than a slow response.
+      if (Date.now() - startedAt > PICTURE_BUDGET_MS) return;
+
+      let url = null;
+      try {
+        url = (await withTimeout(sock.profilePictureUrl(jid, "image"), PICTURE_LOOKUP_MS)) || null;
+      } catch {
+        url = null; // no picture, private picture, or the lookup timed out
+      }
+
+      pictureCache.set(`${userId}:${jid}`, { url, at: Date.now() });
+      out.set(jid, url);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(PICTURE_CONCURRENCY, queue.length) }, worker),
+  );
+
+  return out;
+};
+
 const cleanNumber = (value) => {
   if (!value) return null;
   const num = String(value).split("@")[0];
@@ -48,7 +121,16 @@ const whatsappGroupsController = async (req, res) => {
       return Boolean(me?.admin);
     };
 
-    const list = Object.values(groups || {}).map((g) => {
+    const rawList = Object.values(groups || {});
+
+    // Fetched in one batch so the list still answers when WhatsApp is slow.
+    const pictures = await loadGroupPictures(
+      sock,
+      userId,
+      rawList.map((g) => g.id),
+    );
+
+    const list = rawList.map((g) => {
       const amIAdmin = myAdminStatus(g);
 
       return {
@@ -60,6 +142,7 @@ const whatsappGroupsController = async (req, res) => {
         isCommunityAnnounce: Boolean(g.isCommunityAnnounce),
         linkedParent: g.linkedParent || null,
         creation: g.creation || null,
+        profilePicUrl: pictures.get(g.id) || null,
         restrict: Boolean(g.restrict),
         announce: Boolean(g.announce),
         isOwnedByMe: isOwnedByMe(g),
