@@ -13,7 +13,10 @@ route.use("/auth", authRoutes);
 route.use("/otp", authRoutes);
 route.use("/whatsapp", whatsappRoutes);
 route.use("/messaging", messagingRoutes);
-// Public probes → /health and /api/health (plus /health/ready and /api/health/ready).
+// Public probes → / , /health and /api/health
+// (readiness: /ready, /health/ready and /api/health/ready).
+// Mounted at "/" as well so a plain GET / answers the health check.
+route.use("/", healthRoutes);
 route.use("/health", healthRoutes);
 
 export default route;
