@@ -10,20 +10,6 @@ import { shutdownAll } from "./src/integrations/whatsapp/manager.js";
 
 const PORT = process.env.PORT || 8080;
 
-/**
- * Render spins a FREE instance down after ~15 minutes without inbound HTTP
- * traffic. When that happens the whole process (and with it every WhatsApp
- * socket) dies, and the container filesystem is reset.
- *
- * Setting KEEP_ALIVE=true makes the service ping its own public /health
- * endpoint every 10 minutes so the instance never goes idle. Render exposes
- * the public URL automatically as RENDER_EXTERNAL_URL, so no extra
- * configuration is needed on that host.
- *
- * NOTE: an always-on free instance uses roughly the entire 750
- * instance-hours/month free allowance — enable it only when you need the
- * WhatsApp session to stay online around the clock.
- */
 const startKeepAlive = () => {
   if (String(process.env.KEEP_ALIVE || "").toLowerCase() !== "true") return;
 

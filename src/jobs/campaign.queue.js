@@ -23,6 +23,7 @@ import CampaignRecipient from "../models/messaging/campaignRecipient.model.js";
 import Message from "../models/messaging/message.model.js";
 import ContactActivity from "../models/messaging/contactActivity.model.js";
 import mongoose from "mongoose";
+import { TRANSIENT_SEND_ERRORS } from "../integrations/whatsapp/module.js";
 import {
   delay,
   syncCampaignStatus,
@@ -151,13 +152,33 @@ const recoverPendingJobs = async () => {
       }
     }
 
-    const messages = await Message.find({ status: "queued" })
+    await recoverQueuedMessages();
+  } catch (err) {
+    console.error("[CRM Queue] recovery error:", err.message);
+  }
+};
+
+/**
+ * Re-enqueue every message still sitting in "queued" that is not already in
+ * this process's queue.
+ *
+ * Pass an owner id to scope it to one login — used when that login's WhatsApp
+ * socket comes online, which is exactly the moment a deferred send can finally
+ * go out.
+ */
+const recoverQueuedMessages = async (ownerId = null) => {
+  try {
+    const filter = { status: "queued" };
+    if (ownerId) filter.owner = ownerId;
+
+    const messages = await Message.find(filter)
       .select("_id owner to content type media campaign")
       .exec();
-    const messagesToRecover = messages.filter(
-      (m) => !queuedMessageIds.has(String(m._id)),
-    );
-    for (const m of messagesToRecover) {
+
+    let recovered = 0;
+    for (const m of messages) {
+      // Already queued in this process — re-adding would double-send.
+      if (queuedMessageIds.has(String(m._id))) continue;
       enqueueMessage({
         messageId: m._id,
         ownerId: m.owner.toString(),
@@ -167,14 +188,20 @@ const recoverPendingJobs = async () => {
         media: m.media || null,
         campaignId: m.campaign ? m.campaign.toString() : null,
       });
+      recovered++;
     }
-    if (messagesToRecover.length) {
+
+    if (recovered) {
       console.log(
-        `[CRM Queue] Recovered ${messagesToRecover.length} queued message(s)`,
+        `[CRM Queue] Recovered ${recovered} queued message(s)${
+          ownerId ? ` for owner ${ownerId}` : ""
+        }`,
       );
     }
+    return recovered;
   } catch (err) {
-    console.error("[CRM Queue] recovery error:", err.message);
+    console.error("[CRM Queue] queued message recovery error:", err.message);
+    return 0;
   }
 };
 
@@ -370,6 +397,22 @@ const _sendCampaignRecipient = async (job) => {
     media,
   });
 
+  // The owner's socket is down (restart, spin-down, reconnect) — this is not
+  // the recipient's fault and the send will work once WhatsApp is back, so the
+  // recipient stays queued and the recovery sweep retries it. Counting it as a
+  // retry would fail the whole campaign in a few seconds.
+  if (!result.success && TRANSIENT_SEND_ERRORS.has(result.code)) {
+    recipient.status = "queued";
+    recipient.error = result.error || "WhatsApp not connected";
+    await recipient.save();
+    queuedRecipientIds.delete(job.recipientId);
+    console.warn(
+      `[CRM Queue] WhatsApp session unavailable for ${job.ownerId} ` +
+        `(${result.code}) — recipient ${job.recipientId} kept queued`,
+    );
+    return;
+  }
+
   if (result.success) {
     recipient.status = "sent";
     recipient.whatsappMessageId = result.messageId;
@@ -446,6 +489,23 @@ const _sendMessage = async (job) => {
     media: job.media || null,
   });
 
+  // See _sendCampaignRecipient: a disconnected session is temporary, so the
+  // message stays queued (and is released from the dedup set so the periodic
+  // recovery sweep retries it) instead of burning its retries. An OTP that a
+  // reconnect would have delivered must not be marked failed after ~10s.
+  if (!result.success && TRANSIENT_SEND_ERRORS.has(result.code)) {
+    await Message.updateOne(
+      { _id: job.messageId },
+      { $set: { status: "queued", error: result.error } },
+    ).exec();
+    queuedMessageIds.delete(String(job.messageId));
+    console.warn(
+      `[CRM Queue] WhatsApp session unavailable for ${job.ownerId} ` +
+        `(${result.code}) — message ${job.messageId} kept queued`,
+    );
+    return;
+  }
+
   if (result.success) {
     await Message.updateOne(
       { _id: job.messageId },
@@ -454,6 +514,7 @@ const _sendMessage = async (job) => {
           status: "sent",
           whatsappMessageId: result.messageId,
           sentAt: new Date(),
+          error: null,
         },
       },
     ).exec();
@@ -588,6 +649,7 @@ const campaignQueue = {
   resumeCampaign,
   cancelCampaign,
   recoverPendingJobs,
+  recoverQueuedMessages,
   getQueueStats,
 };
 

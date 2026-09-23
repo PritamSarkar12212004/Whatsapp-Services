@@ -6,6 +6,27 @@ import { promiseTimeout } from "@whiskeysockets/baileys";
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || "30000", 10);
 
 /**
+ * Why a send failed — callers (the queue worker) need to tell a PERMANENT
+ * failure (the number is not on WhatsApp, the message was rejected) from a
+ * TRANSIENT one (the owner's socket is not up right now). A transient failure
+ * must NOT consume a job's retries: the socket coming back a minute later is
+ * the normal case after a restart / free-plan spin-down / reconnect, and a
+ * few fast retries would permanently fail an otherwise deliverable OTP.
+ */
+export const SEND_ERROR = {
+  NOT_CONNECTED: "not_connected",
+  NOT_AUTHENTICATED: "not_authenticated",
+  INVALID_NUMBER: "invalid_number",
+  SEND_FAILED: "send_failed",
+};
+
+/** Transient reasons — the same send can succeed once the session is online. */
+export const TRANSIENT_SEND_ERRORS = new Set([
+  SEND_ERROR.NOT_CONNECTED,
+  SEND_ERROR.NOT_AUTHENTICATED,
+]);
+
+/**
  * Send an OTP message using the system-level WhatsApp connection.
  * Used by the OTP authentication flow.
  */
@@ -60,19 +81,31 @@ export const sendUserMessage = async (userId, number, message) => {
 
     if (!client) {
       console.error(`WhatsApp session not connected for user ${userId}`);
-      return { success: false, error: "WhatsApp not connected" };
+      return {
+        success: false,
+        error: "WhatsApp not connected",
+        code: SEND_ERROR.NOT_CONNECTED,
+      };
     }
 
     if (!client.user) {
       console.error(`WhatsApp session not authenticated for user ${userId}`);
-      return { success: false, error: "WhatsApp not authenticated" };
+      return {
+        success: false,
+        error: "WhatsApp not authenticated",
+        code: SEND_ERROR.NOT_AUTHENTICATED,
+      };
     }
 
     let phoneNumber = number.toString().replace(/\D/g, "");
     if (phoneNumber.length === 10) phoneNumber = `91${phoneNumber}`;
     else if (phoneNumber.length !== 12) {
       console.error(`Invalid phone number: ${number}`);
-      return { success: false, error: "Invalid phone number" };
+      return {
+        success: false,
+        error: "Invalid phone number",
+        code: SEND_ERROR.INVALID_NUMBER,
+      };
     }
 
     const chatId = `${phoneNumber}@s.whatsapp.net`;
@@ -87,7 +120,7 @@ export const sendUserMessage = async (userId, number, message) => {
     return { success: true, messageId: result.key.id };
   } catch (err) {
     console.error(err, { userId, phone: number });
-    return { success: false, error: err.message };
+    return { success: false, error: err.message, code: SEND_ERROR.SEND_FAILED };
   }
 };
 
@@ -137,16 +170,28 @@ export const sendUserMediaMessage = async (userId, number, opts = {}) => {
 
     const client = getSocket(userId);
     if (!client) {
-      return { success: false, error: "WhatsApp not connected" };
+      return {
+        success: false,
+        error: "WhatsApp not connected",
+        code: SEND_ERROR.NOT_CONNECTED,
+      };
     }
     if (!client.user) {
-      return { success: false, error: "WhatsApp not authenticated" };
+      return {
+        success: false,
+        error: "WhatsApp not authenticated",
+        code: SEND_ERROR.NOT_AUTHENTICATED,
+      };
     }
 
     let phoneNumber = number.toString().replace(/\D/g, "");
     if (phoneNumber.length === 10) phoneNumber = `91${phoneNumber}`;
     else if (phoneNumber.length !== 12) {
-      return { success: false, error: "Invalid phone number" };
+      return {
+        success: false,
+        error: "Invalid phone number",
+        code: SEND_ERROR.INVALID_NUMBER,
+      };
     }
     const chatId = `${phoneNumber}@s.whatsapp.net`;
 
@@ -196,7 +241,7 @@ export const sendUserMediaMessage = async (userId, number, opts = {}) => {
     return { success: true, messageId: result.key.id };
   } catch (err) {
     console.error(err, { userId, phone: number, type });
-    return { success: false, error: err.message };
+    return { success: false, error: err.message, code: SEND_ERROR.SEND_FAILED };
   }
 };
 

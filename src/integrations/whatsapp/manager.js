@@ -569,6 +569,21 @@ const initializeSocket = async (key, session) => {
       // Reset so a reconnect re-triggers contact sync after initial sync
       session.contactSyncScheduled = false;
       maybeTriggerContactSync();
+
+      // A number coming online is exactly when anything still "queued" for
+      // this login can finally go out — OTPs deferred while the socket was
+      // down, or sends left in the in-memory queue by a restart. Nudge the
+      // queue now instead of waiting for the next recovery sweep. The dynamic
+      // import avoids a cycle (the queue imports this module's send helpers).
+      import("../../jobs/campaign.queue.js")
+        .then(({ default: campaignQueue }) =>
+          campaignQueue.recoverQueuedMessages(userId),
+        )
+        .catch((err) =>
+          console.error(
+            `[Baileys] queued message recovery failed for ${key}: ${err.message}`,
+          ),
+        );
     }
 
     // Contact sync must run only AFTER the connection is fully online AND
