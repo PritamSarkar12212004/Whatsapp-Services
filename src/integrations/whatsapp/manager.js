@@ -182,7 +182,7 @@ const updateDbStatus = async (key, status, extra = {}) => {
     await WhatsAppSession.findOneAndUpdate(
       { userId, accountId: accountId ?? PRIMARY_ACCOUNT_ID },
       { sessionId: String(key), status, ...extra },
-      { upsert: true, new: true },
+      { upsert: true, returnDocument: "after" },
     );
   } catch (err) {
     console.error(`[Baileys] DB status update error for ${key}:`, err.message);
@@ -311,7 +311,9 @@ const initializeSocket = async (key, session) => {
   // time the service restarted or redeployed.
   let state, saveCreds;
   try {
-    ({ state, saveCreds } = await useMongoAuthState(userId));
+    // Auth state must use the full account key.  Using the login id here made
+    // secondary accounts share the primary account's Baileys credentials.
+    ({ state, saveCreds } = await useMongoAuthState(key));
   } catch (err) {
     console.error(
       chalk.red(
@@ -396,6 +398,11 @@ const initializeSocket = async (key, session) => {
   await updateDbStatus(key, "connecting");
   armStuckWatchdog(key, session);
 
+  // A forced reconnect can create a replacement socket while an older socket
+  // is still emitting events.  Only the socket currently registered for this
+  // key is allowed to mutate the session or its DB status.
+  const isCurrentSocket = () => session.socket === sock && !superseded();
+
   sock.ev.on("creds.update", saveCreds);
 
   // Trigger the WhatsApp → CRM contact sync only once the connection is fully
@@ -438,6 +445,13 @@ const initializeSocket = async (key, session) => {
   };
 
   sock.ev.on("connection.update", async (update) => {
+    if (!isCurrentSocket()) {
+      console.warn(
+        `[Baileys] Ignoring stale connection update for session ${key}`,
+      );
+      return;
+    }
+
     const { connection, lastDisconnect, qr, receivedPendingNotifications } = update;
 
     if (qr) {
@@ -554,12 +568,11 @@ const initializeSocket = async (key, session) => {
       session.stuckRecoveries = 0;
       session.connectingSince = null;
       clearStuckWatchdog(session);
-      const phone = sock.user?.id?.split(":")[0] || "Unknown";
       console.log(
-        chalk.green(`[Baileys] WhatsApp connected for ${key} (${phone})`),
+        chalk.green(`[Baileys] WhatsApp session registered and connected for ${key}`),
       );
       await updateDbStatus(key, "connected", {
-        phoneNumber: phone,
+        phoneNumber: sock.user?.id?.split(":")[0] || null,
         lastConnectedAt: new Date(),
       });
       await rememberAccountStatus(key, "connected", {
@@ -662,6 +675,20 @@ const triggerContactSync = async (userId, options = {}) => {
 const getSocket = (userId) => {
   const session = sessions.get(userId);
   return session?.socket || null;
+};
+
+/**
+ * Safe diagnostic snapshot for senders and the queue.  It deliberately
+ * excludes phone numbers, credentials and QR data.
+ */
+const getSocketInfo = (userId) => {
+  const session = sessions.get(userId);
+  return {
+    registryKey: String(userId),
+    exists: Boolean(session?.socket),
+    authenticated: Boolean(session?.socket?.user),
+    status: session?.status || "disconnected",
+  };
 };
 
 /**
@@ -861,6 +888,7 @@ const shutdownAll = async () => {
 export {
   connect,
   getSocket,
+  getSocketInfo,
   getQR,
   getStatus,
   disconnect,

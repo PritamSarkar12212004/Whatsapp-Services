@@ -51,7 +51,7 @@ const contactGroupService = {
     const group = await ContactGroup.findOneAndUpdate(
       { _id: id, owner: ownerId },
       { $set: updates },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).exec();
 
     if (!group) {
@@ -148,7 +148,7 @@ const contactGroupService = {
     const group = await ContactGroup.findOneAndUpdate(
       { _id: id, owner: ownerId },
       { $pull: { contacts: contactId } },
-      { new: true },
+      { returnDocument: "after" },
     ).exec();
 
     if (!group) {

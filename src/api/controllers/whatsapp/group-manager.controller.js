@@ -137,7 +137,7 @@ const saveGroupManagerController = async (req, res) => {
           schedules: sanitizeSchedules(schedules),
         },
       },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
+      { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
     );
 
     invalidateManagerCache(ids.accountKey, ids.groupJid);

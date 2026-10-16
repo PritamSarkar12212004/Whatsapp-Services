@@ -336,7 +336,7 @@ const contactService = {
     const contact = await Contact.findOneAndUpdate(
       { _id: id, owner: ownerId },
       { $set: { isBlocked: true }, $currentDate: { updatedAt: true } },
-      { new: true },
+      { returnDocument: "after" },
     ).exec();
     if (!contact) {
       const e = new Error("Contact not found");
@@ -352,7 +352,7 @@ const contactService = {
     const contact = await Contact.findOneAndUpdate(
       { _id: id, owner: ownerId },
       { $set: { isOptedOut: true }, $currentDate: { updatedAt: true } },
-      { new: true },
+      { returnDocument: "after" },
     ).exec();
     if (!contact) {
       const e = new Error("Contact not found");

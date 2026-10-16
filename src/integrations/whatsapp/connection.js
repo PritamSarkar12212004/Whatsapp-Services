@@ -91,8 +91,16 @@ const initializeSocket = async () => {
 
     if (qr) {
       retryCount = 0;
-      console.log(chalk.cyan(whatsappConnectionLog.CONNECTION.QR_INFO_BORDER));
-      console.log(chalk.cyan(whatsappConnectionLog.CONNECTION.QR_GENERATED));
+      console.log(
+        chalk.cyan(
+          "[Baileys][system] " + whatsappConnectionLog.CONNECTION.QR_INFO_BORDER,
+        ),
+      );
+      console.log(
+        chalk.cyan(
+          "[Baileys][system] " + whatsappConnectionLog.CONNECTION.QR_GENERATED,
+        ),
+      );
       console.log(chalk.cyan(whatsappConnectionLog.CONNECTION.QR_INFO_BORDER));
       qrcode.generate(qr, { small: true });
       console.log(
@@ -191,13 +199,7 @@ const initializeSocket = async () => {
     } else if (connection === "open") {
       retryCount = 0;
       reconnecting = false;
-      const phone = sock.user?.id?.split(":")[0] || "Unknown";
-      const userId = sock.user?.id || "Unknown";
-      console.log(
-        chalk.green(
-          whatsappConnectionLog.CONNECTION.CONNECTION_SUCCESS(phone, userId),
-        ),
-      );
+      console.log(chalk.green("[Baileys][system] Connection open"));
     }
   });
 

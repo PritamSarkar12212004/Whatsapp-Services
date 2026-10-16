@@ -8,7 +8,7 @@ const storeOtp = async (wpnumber, hashOtp, expiry) => {
   await otpModel.findOneAndUpdate(
     { wpnumber: wpnumber },
     { hashedOtp: hashOtp, expiresAt: expiry },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   );
 };
 

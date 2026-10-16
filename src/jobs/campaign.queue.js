@@ -46,6 +46,8 @@ const cancelledCampaigns = new Set();
 // recovery sweep must not re-enqueue (duplicate sends) anything already queued.
 const queuedRecipientIds = new Set();
 const queuedMessageIds = new Set();
+let pendingRecovery = null;
+let pendingMessageRecovery = null;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -60,6 +62,7 @@ const enqueueCampaign = (job) => {
   const ownerId = String(job.ownerId);
 
   for (const recipientId of job.recipientIds) {
+    if (queuedRecipientIds.has(String(recipientId))) continue;
     queuedRecipientIds.add(String(recipientId));
     queue.push({
       type: "campaign",
@@ -76,7 +79,9 @@ const enqueueCampaign = (job) => {
 
 /** Enqueue a single transactional message job. */
 const enqueueMessage = (job) => {
-  queuedMessageIds.add(String(job.messageId));
+  const messageId = String(job.messageId);
+  if (queuedMessageIds.has(messageId)) return false;
+  queuedMessageIds.add(messageId);
   queue.push({
     type: "message",
     messageId: String(job.messageId),
@@ -89,6 +94,7 @@ const enqueueMessage = (job) => {
     retryCount: 0,
   });
   _wake();
+  return true;
 };
 
 const pauseCampaign = (campaignId) => {
@@ -115,47 +121,53 @@ const cancelCampaign = (campaignId) => {
  * "queued" or "running" are recovered — paused/cancelled are left alone.
  */
 const recoverPendingJobs = async () => {
-  try {
-    const activeCampaigns = await Campaign.find({
-      status: { $in: ["queued", "running"] },
-    })
-      .select("_id owner")
-      .exec();
-
-    for (const campaign of activeCampaigns) {
-      // Finalize campaigns whose recipients all finished in a previous
-      // process (queued/running + no active recipients -> completed).
-      await syncCampaignStatus(campaign._id);
-
-      // "sending" recipients are stale after a restart (no send can be
-      // in-flight across processes) — re-enqueue them too.
-      const recipients = await CampaignRecipient.find({
-        campaign: campaign._id,
-        status: { $in: ["pending", "queued", "sending"] },
+  if (pendingRecovery) return pendingRecovery;
+  pendingRecovery = (async () => {
+    try {
+      const activeCampaigns = await Campaign.find({
+        status: { $in: ["queued", "running"] },
       })
-        .select("_id")
+        .select("_id owner")
         .exec();
 
-      // Skip recipients that are already in the in-memory queue
-      const toRecover = recipients.filter(
-        (r) => !queuedRecipientIds.has(String(r._id)),
-      );
-      if (toRecover.length > 0) {
-        enqueueCampaign({
-          campaignId: campaign._id,
-          recipientIds: toRecover.map((r) => r._id),
-          ownerId: campaign.owner.toString(),
-        });
-        console.log(
-          `[CRM Queue] Recovered ${toRecover.length} queued recipient(s) for campaign ${campaign._id}`,
-        );
-      }
-    }
+      for (const campaign of activeCampaigns) {
+        // Finalize campaigns whose recipients all finished in a previous
+        // process (queued/running + no active recipients -> completed).
+        await syncCampaignStatus(campaign._id);
 
-    await recoverQueuedMessages();
-  } catch (err) {
-    console.error("[CRM Queue] recovery error:", err.message);
-  }
+        // "sending" recipients are stale after a restart (no send can be
+        // in-flight across processes) — re-enqueue them too.
+        const recipients = await CampaignRecipient.find({
+          campaign: campaign._id,
+          status: { $in: ["pending", "queued", "sending"] },
+        })
+          .select("_id")
+          .exec();
+
+        // Skip recipients that are already in the in-memory queue
+        const toRecover = recipients.filter(
+          (r) => !queuedRecipientIds.has(String(r._id)),
+        );
+        if (toRecover.length > 0) {
+          enqueueCampaign({
+            campaignId: campaign._id,
+            recipientIds: toRecover.map((r) => r._id),
+            ownerId: campaign.owner.toString(),
+          });
+          console.log(
+            `[CRM Queue] Recovered ${toRecover.length} queued recipient(s) for campaign ${campaign._id}`,
+          );
+        }
+      }
+
+      await recoverQueuedMessages();
+    } catch (err) {
+      console.error("[CRM Queue] recovery error:", err.message);
+    } finally {
+      pendingRecovery = null;
+    }
+  })();
+  return pendingRecovery;
 };
 
 /**
@@ -167,42 +179,47 @@ const recoverPendingJobs = async () => {
  * go out.
  */
 const recoverQueuedMessages = async (ownerId = null) => {
-  try {
-    const filter = { status: "queued" };
-    if (ownerId) filter.owner = ownerId;
+  if (pendingMessageRecovery) return pendingMessageRecovery;
+  pendingMessageRecovery = (async () => {
+    try {
+      const filter = { status: "queued" };
+      if (ownerId) filter.owner = ownerId;
 
-    const messages = await Message.find(filter)
-      .select("_id owner to content type media campaign")
-      .exec();
+      const messages = await Message.find(filter)
+        .select("_id owner to content type media campaign")
+        .exec();
 
-    let recovered = 0;
-    for (const m of messages) {
-      // Already queued in this process — re-adding would double-send.
-      if (queuedMessageIds.has(String(m._id))) continue;
-      enqueueMessage({
-        messageId: m._id,
-        ownerId: m.owner.toString(),
-        phoneNumber: m.to,
-        content: m.content,
-        type: m.type,
-        media: m.media || null,
-        campaignId: m.campaign ? m.campaign.toString() : null,
-      });
-      recovered++;
+      let recovered = 0;
+      for (const m of messages) {
+        // Already queued in this process — re-adding would double-send.
+        if (queuedMessageIds.has(String(m._id))) continue;
+        if (enqueueMessage({
+          messageId: m._id,
+          ownerId: m.owner.toString(),
+          phoneNumber: m.to,
+          content: m.content,
+          type: m.type,
+          media: m.media || null,
+          campaignId: m.campaign ? m.campaign.toString() : null,
+        })) recovered++;
+      }
+
+      if (recovered) {
+        console.log(
+          `[CRM Queue] Recovered ${recovered} queued message(s)${
+            ownerId ? ` for owner ${ownerId}` : ""
+          }`,
+        );
+      }
+      return recovered;
+    } catch (err) {
+      console.error("[CRM Queue] queued message recovery error:", err.message);
+      return 0;
+    } finally {
+      pendingMessageRecovery = null;
     }
-
-    if (recovered) {
-      console.log(
-        `[CRM Queue] Recovered ${recovered} queued message(s)${
-          ownerId ? ` for owner ${ownerId}` : ""
-        }`,
-      );
-    }
-    return recovered;
-  } catch (err) {
-    console.error("[CRM Queue] queued message recovery error:", err.message);
-    return 0;
-  }
+  })();
+  return pendingMessageRecovery;
 };
 
 /**
@@ -475,7 +492,7 @@ const _sendMessage = async (job) => {
   const updated = await Message.findOneAndUpdate(
     { _id: job.messageId, owner: job.ownerId, status: "queued" },
     { $set: { status: "sending" } },
-    { new: true },
+    { returnDocument: "after" },
   ).exec();
 
   if (!updated) {

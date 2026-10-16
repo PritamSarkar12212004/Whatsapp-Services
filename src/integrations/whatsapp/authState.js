@@ -314,7 +314,7 @@ const importLegacyAuthState = async (ownerKey) => {
  * Build a MongoDB-backed auth state for `ownerKey`.
  *
  * Drop-in replacement for `useMultiFileAuthState(folder)`:
- *   const { state, saveCreds } = await useMongoAuthState(userId);
+ *   const { state, saveCreds } = await useMongoAuthState(accountKey);
  *
  * The key store is wrapped in `makeCacheableSignalKeyStore` because Baileys 7
  * does that itself ONLY for transaction capability — without the cache every

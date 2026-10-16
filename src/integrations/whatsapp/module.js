@@ -1,4 +1,4 @@
-import { getSocket } from "./manager.js";
+import { getSocket, getSocketInfo } from "./manager.js";
 import { promiseTimeout } from "@whiskeysockets/baileys";
 
 // If a send hangs (e.g. stalled socket), fail it instead of blocking the
@@ -25,6 +25,17 @@ export const TRANSIENT_SEND_ERRORS = new Set([
   SEND_ERROR.NOT_CONNECTED,
   SEND_ERROR.NOT_AUTHENTICATED,
 ]);
+
+const logSocketLookup = (ownerKey, client) => {
+  const info = getSocketInfo(ownerKey);
+  console.warn(
+    "[WhatsApp Send] Session lookup unavailable",
+    JSON.stringify({
+      ...info,
+      socketExists: Boolean(client),
+    }),
+  );
+};
 
 /**
  * Send an OTP message using the system-level WhatsApp connection.
@@ -80,7 +91,7 @@ export const sendUserMessage = async (userId, number, message) => {
     const client = getSocket(userId);
 
     if (!client) {
-      console.error(`WhatsApp session not connected for user ${userId}`);
+      logSocketLookup(userId, client);
       return {
         success: false,
         error: "WhatsApp not connected",
@@ -89,7 +100,7 @@ export const sendUserMessage = async (userId, number, message) => {
     }
 
     if (!client.user) {
-      console.error(`WhatsApp session not authenticated for user ${userId}`);
+      logSocketLookup(userId, client);
       return {
         success: false,
         error: "WhatsApp not authenticated",
@@ -170,6 +181,7 @@ export const sendUserMediaMessage = async (userId, number, opts = {}) => {
 
     const client = getSocket(userId);
     if (!client) {
+      logSocketLookup(userId, client);
       return {
         success: false,
         error: "WhatsApp not connected",
@@ -177,6 +189,7 @@ export const sendUserMediaMessage = async (userId, number, opts = {}) => {
       };
     }
     if (!client.user) {
+      logSocketLookup(userId, client);
       return {
         success: false,
         error: "WhatsApp not authenticated",

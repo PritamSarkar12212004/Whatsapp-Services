@@ -257,7 +257,7 @@ export const updateBotController = async (req, res) => {
     const bot = await Bot.findOneAndUpdate(
       { _id: found.bot._id, owner: found.userId },
       { $set: update },
-      { new: true },
+      { returnDocument: "after" },
     ).lean();
 
     invalidateBotCache(found.accountKey);
@@ -329,7 +329,7 @@ export const setBotStatusController = async (req, res) => {
     const bot = await Bot.findOneAndUpdate(
       { _id: found.bot._id, owner: found.userId },
       { $set: { status } },
-      { new: true },
+      { returnDocument: "after" },
     ).lean();
 
     invalidateBotCache(found.accountKey);
@@ -370,7 +370,7 @@ export const attachBotGroupController = async (req, res) => {
     const bot = await Bot.findOneAndUpdate(
       { _id: found.bot._id, owner: found.userId },
       { $set: { groups } },
-      { new: true },
+      { returnDocument: "after" },
     ).lean();
 
     invalidateBotCache(found.accountKey, jid);
@@ -392,7 +392,7 @@ export const detachBotGroupController = async (req, res) => {
     const bot = await Bot.findOneAndUpdate(
       { _id: found.bot._id, owner: found.userId },
       { $pull: { groups: { jid } } },
-      { new: true },
+      { returnDocument: "after" },
     ).lean();
 
     invalidateBotCache(found.accountKey, jid);

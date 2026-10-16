@@ -37,7 +37,7 @@ const tagService = {
     const tag = await Tag.findOneAndUpdate(
       { _id: id, owner: ownerId },
       { $set: updates },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).exec();
 
     if (!tag) {

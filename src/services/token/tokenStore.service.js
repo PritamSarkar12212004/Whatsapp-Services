@@ -36,7 +36,7 @@ const tokenStore = {
       await TempToken.findOneAndUpdate(
         { key: k },
         { value: v, expiresAt },
-        { upsert: true, new: true },
+        { upsert: true, returnDocument: "after" },
       );
       return true;
     } catch (err) {

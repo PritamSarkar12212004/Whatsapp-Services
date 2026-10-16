@@ -108,7 +108,7 @@ const ensurePrimaryRow = async (userId) =>
     {
       $setOnInsert: { isPrimary: true, label: "" },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 
 export const listAccountsController = async (req, res) => {
@@ -215,7 +215,7 @@ export const updateAccountController = async (req, res) => {
     const account = await WhatsappAccount.findOneAndUpdate(
       { userId, accountId },
       { $set: { label } },
-      { new: true },
+      { returnDocument: "after" },
     ).lean();
 
     if (!account) {
