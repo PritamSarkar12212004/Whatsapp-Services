@@ -562,6 +562,7 @@ const initializeSocket = async (key, session) => {
         }, delay);
       }
     } else if (connection === "open") {
+      const phoneNumber = sock.user?.id?.split(":")[0] || null;
       session.status = "connected";
       session.retryCount = 0;
       session.conflictRetries = 0;
@@ -572,11 +573,11 @@ const initializeSocket = async (key, session) => {
         chalk.green(`[Baileys] WhatsApp session registered and connected for ${key}`),
       );
       await updateDbStatus(key, "connected", {
-        phoneNumber: sock.user?.id?.split(":")[0] || null,
+        phoneNumber,
         lastConnectedAt: new Date(),
       });
       await rememberAccountStatus(key, "connected", {
-        phoneNumber: phone,
+        phoneNumber,
         lastConnectedAt: new Date(),
       });
       // Reset so a reconnect re-triggers contact sync after initial sync
