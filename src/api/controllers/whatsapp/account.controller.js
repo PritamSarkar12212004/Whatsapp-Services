@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("account.controller");
+
 /**
  * WhatsApp accounts — one login, several linked numbers.
  *
@@ -127,7 +131,7 @@ export const listAccountsController = async (req, res) => {
       data: accounts.map(withLiveStatus),
     });
   } catch (err) {
-    console.error("Error listing WhatsApp accounts:", err.message);
+    log.error("Error listing WhatsApp accounts:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to list WhatsApp accounts" });
@@ -179,7 +183,7 @@ export const createAccountController = async (req, res) => {
       status: "disconnected",
     });
 
-    console.log(
+    log.info(
       chalk.cyan(`[Accounts] Added WhatsApp account ${accountId} for ${userId}`),
     );
 
@@ -188,7 +192,7 @@ export const createAccountController = async (req, res) => {
       data: withLiveStatus(account.toObject()),
     });
   } catch (err) {
-    console.error("Error creating WhatsApp account:", err.message);
+    log.error("Error creating WhatsApp account:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to add the number" });
@@ -226,7 +230,7 @@ export const updateAccountController = async (req, res) => {
 
     return res.status(200).json({ status: "success", data: withLiveStatus(account) });
   } catch (err) {
-    console.error("Error updating WhatsApp account:", err.message);
+    log.error("Error updating WhatsApp account:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to update the number" });
@@ -264,23 +268,23 @@ export const deleteAccountController = async (req, res) => {
     try {
       await logout(key);
     } catch (err) {
-      console.warn(`[Accounts] Logout failed for ${key}: ${err.message}`);
+      log.warn(`[Accounts] Logout failed for ${key}: ${err.message}`);
     }
 
     try {
       await clearAuthState(key);
     } catch (err) {
-      console.warn(`[Accounts] Auth clear failed for ${key}: ${err.message}`);
+      log.warn(`[Accounts] Auth clear failed for ${key}: ${err.message}`);
     }
 
     await WhatsAppSession.deleteOne({ userId, accountId });
     await WhatsappAccount.deleteOne({ userId, accountId });
 
-    console.log(chalk.yellow(`[Accounts] Removed WhatsApp account ${key}`));
+    log.info(chalk.yellow(`[Accounts] Removed WhatsApp account ${key}`));
 
     return res.status(200).json({ status: "success", removed: true });
   } catch (err) {
-    console.error("Error removing WhatsApp account:", err.message);
+    log.error("Error removing WhatsApp account:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to remove the number" });

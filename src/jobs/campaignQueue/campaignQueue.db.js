@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("campaignQueue.db");
+
 /**
  * Pure DB helpers for the campaign/message queue worker.
  * No queue state (no access to the in-memory queue) — safe to import
@@ -39,7 +43,7 @@ export const syncCampaignStatus = async (campaignId) => {
       campaign.status = "running";
       campaign.startedAt = campaign.startedAt || new Date();
       await campaign.save();
-      console.log(`[CRM Queue] Campaign ${campaignId} is now running`);
+      log.info(`[CRM Queue] Campaign ${campaignId} is now running`);
     } else if (
       remaining === 0 &&
       (campaign.status === "queued" || campaign.status === "running")
@@ -47,10 +51,10 @@ export const syncCampaignStatus = async (campaignId) => {
       campaign.status = "completed";
       campaign.completedAt = new Date();
       await campaign.save();
-      console.log(`[CRM Queue] Campaign ${campaignId} completed`);
+      log.info(`[CRM Queue] Campaign ${campaignId} completed`);
     }
   } catch (err) {
-    console.error("[CRM Queue] campaign status sync error:", err.message);
+    log.error("[CRM Queue] campaign status sync error:", err.message);
   }
 };
 
@@ -63,7 +67,7 @@ export const incrementCampaignStat = async (campaignId, field) => {
       { $inc: { [`statistics.${field}`]: 1 } },
     ).exec();
   } catch (err) {
-    console.error("[CRM Queue] increment stat error:", err.message);
+    log.error("[CRM Queue] increment stat error:", err.message);
   }
 };
 
@@ -77,6 +81,6 @@ export const logActivity = async (ownerId, contactId, type, metadata = {}) => {
       metadata,
     });
   } catch (err) {
-    console.error("[CRM Queue] activity log error:", err.message);
+    log.error("[CRM Queue] activity log error:", err.message);
   }
 };

@@ -1,7 +1,6 @@
 import express from "express";
 import helmet from "helmet";
 import dns from "dns";
-import morgan from "morgan";
 import cors from "cors";
 import route from "./api/routes/index.js";
 import GlobalErrorHandler from "./middleware/error.middleware.js";
@@ -33,7 +32,6 @@ const createApp = () => {
       ],
     }),
   );
-  app.use(morgan("dev"));
   app.use(helmet({ crossOriginResourcePolicy: false }));
   app.use(express.json({ limit: "5mb" }));
   app.use(requestInfo);

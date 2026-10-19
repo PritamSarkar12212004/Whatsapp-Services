@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("disconnect.controller");
+
 import { logout } from "../../../integrations/whatsapp/manager.js";
 
 const whatsappDisconnectController = async (req, res) => {
@@ -22,7 +26,7 @@ const whatsappDisconnectController = async (req, res) => {
       connected: false,
     });
   } catch (err) {
-    console.error("Error logging out WhatsApp:", err.message);
+    log.error("Error logging out WhatsApp:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to log out WhatsApp",

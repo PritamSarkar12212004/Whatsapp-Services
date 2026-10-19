@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("groupAutomation.service");
+
 import chalk from "chalk";
 import { jidNormalizedUser } from "@whiskeysockets/baileys";
 import groupManagerModel from "../../models/whatsapp/groupManager.model.js";
@@ -124,7 +128,7 @@ const handleViolation = async (
       action: "warning",
     });
 
-    console.log(
+    log.info(
       chalk.yellow(
         `[Automation] Warning ${strikes}/${strikeLimit} for ${memberName} in ${groupJid} (${reason})`,
       ),
@@ -146,11 +150,11 @@ const handleViolation = async (
           strikes,
           action: "kicked",
         });
-        console.log(
+        log.info(
           chalk.red(`[Automation] Kicked ${memberName} from ${groupJid}`),
         );
       } catch (err) {
-        console.log(
+        log.info(
           chalk.yellow(
             `[Automation] Kick failed for ${memberName}: ${err.message}`,
           ),
@@ -158,7 +162,7 @@ const handleViolation = async (
       }
     }
   } catch (err) {
-    console.error("[Automation] handleViolation error:", err.message);
+    log.error("[Automation] handleViolation error:", err.message);
   }
 };
 
@@ -253,7 +257,7 @@ const handleCommand = async (
       await sock.sendMessage(groupJid, { text: `Kicked +${target}.` });
     }
   } catch (err) {
-    console.error("[Automation] handleCommand error:", err.message);
+    log.error("[Automation] handleCommand error:", err.message);
   }
 };
 
@@ -351,7 +355,7 @@ const processGroupMessage = async (sock, userId, msg) => {
       }
     }
   } catch (err) {
-    console.error("[Automation] processGroupMessage error:", err.message);
+    log.error("[Automation] processGroupMessage error:", err.message);
   }
 };
 
@@ -403,7 +407,7 @@ const handleParticipantsUpdate = async (sock, userId, update) => {
       }
     }
   } catch (err) {
-    console.error("[Automation] handleParticipantsUpdate error:", err.message);
+    log.error("[Automation] handleParticipantsUpdate error:", err.message);
   }
 };
 
@@ -438,7 +442,7 @@ const runDueSchedules = async () => {
           }
 
           if (!message) {
-            console.log(
+            log.info(
               chalk.yellow(`[Automation] Empty message for schedule ${schedule.name}`),
             );
             continue;
@@ -453,13 +457,13 @@ const runDueSchedules = async () => {
             { $set: update },
           );
 
-          console.log(
+          log.info(
             chalk.green(
               `[Automation] Sent scheduled message "${schedule.name}" to ${manager.groupJid}`,
             ),
           );
         } catch (err) {
-          console.error(
+          log.error(
             `[Automation] Schedule "${schedule.name}" failed:`,
             err.message,
           );
@@ -469,7 +473,7 @@ const runDueSchedules = async () => {
       invalidateManagerCache(manager.userId.toString(), manager.groupJid);
     }
   } catch (err) {
-    console.error("[Automation] runDueSchedules error:", err.message);
+    log.error("[Automation] runDueSchedules error:", err.message);
   }
 };
 
@@ -478,7 +482,7 @@ let schedulerTimer = null;
 export const startAutomationScheduler = () => {
   if (schedulerTimer) return;
   schedulerTimer = setInterval(runDueSchedules, SCHEDULER_INTERVAL_MS);
-  console.log(
+  log.info(
     chalk.cyan(
       `[Automation] Scheduler started (every ${SCHEDULER_INTERVAL_MS / 1000}s)`,
     ),
@@ -503,7 +507,7 @@ export const setupGroupAutomation = (sock, userId) => {
     await handleParticipantsUpdate(sock, userId, update);
   });
 
-  console.log(
+  log.info(
     chalk.cyan(`[Automation] Listeners active for user ${userId}`),
   );
 };

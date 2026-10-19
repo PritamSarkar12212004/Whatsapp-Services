@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("profile.controller");
+
 import { getSocket } from "../../../integrations/whatsapp/manager.js";
 
 const whatsappProfileController = async (req, res) => {
@@ -36,7 +40,7 @@ const whatsappProfileController = async (req, res) => {
         const statusResult = await sock.fetchStatus(myJid);
         about = statusResult?.[0]?.status || null;
       } catch (err) {
-        console.error("Error fetching WhatsApp status:", err.message);
+        log.error("Error fetching WhatsApp status:", err.message);
       }
     }
 
@@ -61,7 +65,7 @@ const whatsappProfileController = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("Error getting WhatsApp profile:", err.message);
+    log.error("Error getting WhatsApp profile:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to get WhatsApp profile",

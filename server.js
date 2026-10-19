@@ -1,3 +1,7 @@
+import { createLogger } from "./src/logs/logger.js";
+
+const log = createLogger("server");
+
 import dotenv from "dotenv";
 dotenv.config({ quiet: true });
 import chalk from "chalk";
@@ -14,7 +18,7 @@ const PORT = process.env.PORT || 8080;
 // job) used to terminate the process on modern Node. Log it and keep the
 // server — and the already-established WhatsApp sockets — alive.
 process.on("unhandledRejection", (reason) => {
-  console.error(
+  log.error(
     chalk.red("[Server] Unhandled promise rejection:"),
     reason instanceof Error ? reason.stack || reason.message : reason,
   );
@@ -26,7 +30,7 @@ const startKeepAlive = () => {
   const baseUrl = process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL;
 
   if (!baseUrl) {
-    console.log(
+    log.info(
       chalk.yellow(
         "[KeepAlive] KEEP_ALIVE=true but no public URL (set KEEP_ALIVE_URL or RENDER_EXTERNAL_URL) — skipping",
       ),
@@ -41,17 +45,17 @@ const startKeepAlive = () => {
     try {
       const res = await fetch(url);
       if (!res.ok) {
-        console.log(chalk.yellow(`[KeepAlive] ${url} -> HTTP ${res.status}`));
+        log.info(chalk.yellow(`[KeepAlive] ${url} -> HTTP ${res.status}`));
       }
     } catch (err) {
-      console.log(chalk.yellow(`[KeepAlive] ping failed: ${err.message}`));
+      log.info(chalk.yellow(`[KeepAlive] ping failed: ${err.message}`));
     }
   }, intervalMs);
 
   // Do not keep the event loop alive on our own account.
   if (typeof timer.unref === "function") timer.unref();
 
-  console.log(chalk.cyan(`[KeepAlive] Pinging ${url} every 10 minutes`));
+  log.info(chalk.cyan(`[KeepAlive] Pinging ${url} every 10 minutes`));
 };
 
 const start = async () => {
@@ -59,12 +63,12 @@ const start = async () => {
 
   const app = createApp();
   const server = app.listen(PORT, () => {
-    console.log(chalk.green(MainServerLog.STARTUP_LOG(PORT)));
+    log.info(chalk.green(MainServerLog.STARTUP_LOG(PORT)));
     startKeepAlive();
   });
 
   server.on("error", (err) => {
-    console.error(
+    log.error(
       chalk.red(MainServerLog.SERVER_STARTUP_ERROR_LOG(err, PORT)),
     );
   });
@@ -82,13 +86,13 @@ const start = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
 
-    console.log(
+    log.info(
       chalk.yellow(`\n[Server] ${signal} received — shutting down gracefully...`),
     );
 
     // Never hang forever: hardened exit after 10s.
     const forceExit = setTimeout(() => {
-      console.error(chalk.red("[Server] Forced exit after 10s"));
+      log.error(chalk.red("[Server] Forced exit after 10s"));
       process.exit(1);
     }, 10000);
     if (typeof forceExit.unref === "function") forceExit.unref();
@@ -96,24 +100,24 @@ const start = async () => {
     try {
       await shutdownAll();
     } catch (err) {
-      console.error("[Server] WhatsApp shutdown error:", err.message);
+      log.error("[Server] WhatsApp shutdown error:", err.message);
     }
 
     try {
       closeClient();
     } catch (err) {
-      console.error("[Server] System socket shutdown error:", err.message);
+      log.error("[Server] System socket shutdown error:", err.message);
     }
 
     try {
       await mongoose.connection.close();
-      console.log(chalk.cyan("[Server] MongoDB connection closed"));
+      log.info(chalk.cyan("[Server] MongoDB connection closed"));
     } catch (err) {
-      console.error("[Server] MongoDB close error:", err.message);
+      log.error("[Server] MongoDB close error:", err.message);
     }
 
     server.close(() => {
-      console.log(chalk.cyan("[Server] HTTP server closed"));
+      log.info(chalk.cyan("[Server] HTTP server closed"));
       process.exit(0);
     });
   };

@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("authState");
+
 /**
  * MongoDB-backed Baileys authentication state.
  *
@@ -279,7 +283,7 @@ const importLegacyAuthState = async (ownerKey) => {
   delete byType[CREDS_TYPE];
 
   if (!creds) {
-    console.log(
+    log.info(
       chalk.cyan(
         `[Baileys] No legacy auth state for "${ownerKey}" — starting fresh`,
       ),
@@ -296,7 +300,7 @@ const importLegacyAuthState = async (ownerKey) => {
     0,
   );
 
-  console.log(
+  log.info(
     chalk.green(
       `[Baileys] Imported legacy auth state for "${ownerKey}" into MongoDB ` +
         `(creds + ${keyCount} key(s)${skipped ? `, ${skipped} skipped` : ""})`,

@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("tokenStore.service");
+
 import TempToken from "../../models/token/tempToken.model.js";
 
 /**
@@ -40,7 +44,7 @@ const tokenStore = {
       );
       return true;
     } catch (err) {
-      console.error("❌ TokenStore SET Error:", err.message);
+      log.error("❌ TokenStore SET Error:", err.message);
       return false;
     }
   },
@@ -57,7 +61,7 @@ const tokenStore = {
       }
       return deserialize(doc.value);
     } catch (err) {
-      console.error("❌ TokenStore GET Error:", err.message);
+      log.error("❌ TokenStore GET Error:", err.message);
       return null;
     }
   },
@@ -69,7 +73,7 @@ const tokenStore = {
       await TempToken.deleteOne({ key: k });
       return true;
     } catch (err) {
-      console.error("❌ TokenStore DEL Error:", err.message);
+      log.error("❌ TokenStore DEL Error:", err.message);
       return false;
     }
   },
@@ -81,7 +85,7 @@ const tokenStore = {
       const doc = await TempToken.findOne({ key: k });
       return !!doc && doc.expiresAt > new Date();
     } catch (err) {
-      console.error("❌ TokenStore EXISTS Error:", err.message);
+      log.error("❌ TokenStore EXISTS Error:", err.message);
       return false;
     }
   },
@@ -94,7 +98,7 @@ const tokenStore = {
       await TempToken.updateOne({ key: k }, { expiresAt });
       return true;
     } catch (err) {
-      console.error("❌ TokenStore EXPIRE Error:", err.message);
+      log.error("❌ TokenStore EXPIRE Error:", err.message);
       return false;
     }
   },
@@ -108,7 +112,7 @@ const tokenStore = {
       const ttl = Math.round((doc.expiresAt - new Date()) / 1000);
       return ttl <= 0 ? -1 : ttl; // -1 = expired/about to expire
     } catch (err) {
-      console.error("❌ TokenStore TTL Error:", err.message);
+      log.error("❌ TokenStore TTL Error:", err.message);
       return null;
     }
   },
@@ -125,7 +129,7 @@ const tokenStore = {
       await TempToken.create({ key: k, value: v, expiresAt });
       return "OK";
     } catch (err) {
-      console.error("❌ TokenStore SETNX Error:", err.message);
+      log.error("❌ TokenStore SETNX Error:", err.message);
       return null;
     }
   },
@@ -142,7 +146,7 @@ const tokenStore = {
       await TempToken.updateOne({ key: k }, { value: v, expiresAt });
       return "OK";
     } catch (err) {
-      console.error("❌ TokenStore SETXX Error:", err.message);
+      log.error("❌ TokenStore SETXX Error:", err.message);
       return null;
     }
   },
@@ -153,7 +157,7 @@ const tokenStore = {
       const stored = await tokenStore.get(toStringKey(key));
       return stored === serialize(value);
     } catch (err) {
-      console.error("❌ TokenStore COMPARE Error:", err.message);
+      log.error("❌ TokenStore COMPARE Error:", err.message);
       return false;
     }
   },
@@ -167,7 +171,7 @@ const tokenStore = {
       const result = await TempToken.deleteMany({ key: regex });
       return result.deletedCount > 0;
     } catch (err) {
-      console.error("❌ TokenStore DEL_BY_PATTERN Error:", err.message);
+      log.error("❌ TokenStore DEL_BY_PATTERN Error:", err.message);
       return false;
     }
   },

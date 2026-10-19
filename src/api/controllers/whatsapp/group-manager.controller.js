@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("group-manager.controller");
+
 import groupManagerModel from "../../../models/whatsapp/groupManager.model.js";
 import groupWarningLogModel from "../../../models/whatsapp/groupWarningLog.model.js";
 import { invalidateManagerCache } from "../../../integrations/whatsapp/groupAutomation.service.js";
@@ -91,7 +95,7 @@ const getGroupManagerController = async (req, res) => {
       data: manager || null,
     });
   } catch (err) {
-    console.error("Error getting group manager:", err.message);
+    log.error("Error getting group manager:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to get group manager",
@@ -147,7 +151,7 @@ const saveGroupManagerController = async (req, res) => {
       data: manager,
     });
   } catch (err) {
-    console.error("Error saving group manager:", err.message);
+    log.error("Error saving group manager:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to save group manager",
@@ -173,7 +177,7 @@ const deleteGroupManagerController = async (req, res) => {
       deleted: result.deletedCount > 0,
     });
   } catch (err) {
-    console.error("Error deleting group manager:", err.message);
+    log.error("Error deleting group manager:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to delete group manager",
@@ -201,7 +205,7 @@ const getGroupWarningsController = async (req, res) => {
       data: warnings,
     });
   } catch (err) {
-    console.error("Error getting group warnings:", err.message);
+    log.error("Error getting group warnings:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to get group warnings",

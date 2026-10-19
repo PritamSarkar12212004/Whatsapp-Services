@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("groups.controller");
+
 import { getSocket } from "../../../integrations/whatsapp/manager.js";
 
 /**
@@ -168,7 +172,7 @@ const whatsappGroupsController = async (req, res) => {
       data: list,
     });
   } catch (err) {
-    console.error("Error fetching WhatsApp groups:", err.message);
+    log.error("Error fetching WhatsApp groups:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to fetch WhatsApp groups",

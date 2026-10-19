@@ -1,3 +1,7 @@
+import { createLogger, baileysLogger } from "../../logs/logger.js";
+
+const log = createLogger("wa.gateway");
+
 import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
@@ -116,7 +120,7 @@ const scheduleReconnect = (reason) => {
   const delay = nextBackoffMs();
   lastError = reason;
 
-  console.log(
+  log.info(
     chalk.blue(
       `[Baileys][system] Reconnecting in ${Math.round(delay / 1000)}s ` +
         `(attempt ${retryCount}: ${reason})`,
@@ -127,7 +131,7 @@ const scheduleReconnect = (reason) => {
     reconnectTimer = null;
     reconnecting = false;
     whatsappConnect().catch((err) => {
-      console.error(
+      log.error(
         `[Baileys][system] reconnect attempt failed: ${err.message}`,
       );
     });
@@ -146,7 +150,7 @@ const restartConnection = (reason) => {
 
   const now = Date.now();
   if (now - lastRestartAt < RESTART_DEBOUNCE_MS) {
-    console.log(
+    log.info(
       chalk.yellow(
         `[Baileys][system] Restart requested (${reason}) — already restarting, skipping`,
       ),
@@ -158,7 +162,7 @@ const restartConnection = (reason) => {
   }
   lastRestartAt = now;
 
-  console.warn(chalk.yellow(`[Baileys][system] Restarting socket: ${reason}`));
+  log.warn(chalk.yellow(`[Baileys][system] Restarting socket: ${reason}`));
 
   generation += 1;
 
@@ -189,7 +193,7 @@ const restartConnection = (reason) => {
 
   ensureWatchdog();
   return whatsappConnect().catch((err) => {
-    console.error(
+    log.error(
       `[Baileys][system] restart failed: ${err.message}`,
     );
     return null;
@@ -302,7 +306,7 @@ const initializeSocket = async () => {
   const superseded = () =>
     shuttingDown || generation !== myGeneration;
 
-  console.log(chalk.cyan("[Baileys][system] Initializing WhatsApp connection..."));
+  log.info(chalk.cyan("[Baileys][system] Initializing WhatsApp connection..."));
 
   // Auth state lives in MongoDB (see ./authState.js) so the OTP gateway
   // session survives container restarts / redeploys / free-plan spin-downs.
@@ -312,7 +316,7 @@ const initializeSocket = async () => {
   } catch (err) {
     status = "error";
     lastError = `auth state: ${err.message}`;
-    console.error(
+    log.error(
       chalk.red(
         `[Baileys][system] Failed to load auth state: ${err.message}`,
       ),
@@ -337,13 +341,13 @@ const initializeSocket = async () => {
       "fetchLatestBaileysVersion",
     );
     version = fetchedVersion;
-    console.log(
+    log.info(
       chalk.cyan(
         whatsappConnectionLog.CONNECTION.VERSION_USED(version.join(".")),
       ),
     );
   } catch (err) {
-    console.log(
+    log.info(
       chalk.yellow(whatsappConnectionLog.WARNING.VERSION_FETCH_FAILED),
     );
   }
@@ -352,6 +356,7 @@ const initializeSocket = async () => {
 
   const newSock = makeWASocket({
     auth: state,
+    logger: baileysLogger.child({ account: "system" }),
     browser: Browsers.windows("Chrome"),
     connectTimeoutMs: 20000,
     keepAliveIntervalMs: 15000,
@@ -372,7 +377,7 @@ const initializeSocket = async () => {
   newSock.ev.on("creds.update", () => {
     if (!isCurrent()) return;
     Promise.resolve(saveCreds()).catch((err) =>
-      console.error(
+      log.error(
         `[Baileys][system] creds save failed: ${err.message}`,
       ),
     );
@@ -380,7 +385,7 @@ const initializeSocket = async () => {
 
   newSock.ev.on("connection.update", async (update) => {
     if (!isCurrent()) {
-      console.warn("[Baileys][system] Ignoring stale connection update");
+      log.warn("[Baileys][system] Ignoring stale connection update");
       return;
     }
 
@@ -392,20 +397,20 @@ const initializeSocket = async () => {
       status = "qr_required";
       connectingSince = null;
       connectedSince = null;
-      console.log(
+      log.info(
         chalk.cyan(
           "[Baileys][system] " +
             whatsappConnectionLog.CONNECTION.QR_INFO_BORDER,
         ),
       );
-      console.log(
+      log.info(
         chalk.cyan(
           "[Baileys][system] " + whatsappConnectionLog.CONNECTION.QR_GENERATED,
         ),
       );
-      console.log(chalk.cyan(whatsappConnectionLog.CONNECTION.QR_INFO_BORDER));
+      log.info(chalk.cyan(whatsappConnectionLog.CONNECTION.QR_INFO_BORDER));
       qrcode.generate(updateQr, { small: true });
-      console.log(
+      log.info(
         chalk.cyan(whatsappConnectionLog.CONNECTION.QR_INFO_BORDER + "\n"),
       );
     }
@@ -419,10 +424,10 @@ const initializeSocket = async () => {
       lastDisconnectedAt = new Date();
       lastError = `closed${statusCode ? ` (${statusCode})` : ""}`;
 
-      console.log(
+      log.info(
         chalk.red(whatsappConnectionLog.CONNECTION.CONNECTION_CLOSED),
       );
-      console.log(
+      log.info(
         chalk.yellow(
           whatsappConnectionLog.CONNECTION.DISCONNECT_REASON(statusCode),
         ),
@@ -433,7 +438,7 @@ const initializeSocket = async () => {
 
       // Permanent logout → clean up, do NOT reconnect (needs a new QR scan).
       if (statusCode === DisconnectReason.loggedOut) {
-        console.log(chalk.red(whatsappConnectionLog.WARNING.AUTH_REJECTED));
+        log.info(chalk.red(whatsappConnectionLog.WARNING.AUTH_REJECTED));
         status = "auth_required";
         lastError = "logged out";
         await clearAuthState().catch(() => {});
@@ -444,7 +449,7 @@ const initializeSocket = async () => {
 
       // 403/419 are unrecoverable auth failures in Baileys.
       if (statusCode === 403 || statusCode === 419) {
-        console.log(chalk.red(whatsappConnectionLog.WARNING.AUTH_REJECTED));
+        log.info(chalk.red(whatsappConnectionLog.WARNING.AUTH_REJECTED));
         status = "auth_required";
         lastError = `auth rejected (${statusCode})`;
         await clearAuthState().catch(() => {});
@@ -457,7 +462,7 @@ const initializeSocket = async () => {
       // error) and plain network drops — is transient. Keep retrying with
       // backoff instead of leaving the gateway dead.
       if (statusCode === 440) {
-        console.log(
+        log.info(
           chalk.yellow(
             "[Baileys][system] Conflict (440) — these credentials are in use by ANOTHER " +
               "running instance (e.g. local + VPS). WhatsApp allows one socket per " +
@@ -479,7 +484,7 @@ const initializeSocket = async () => {
       connectedSince = new Date();
       lastConnectedAt = new Date();
       lastError = null;
-      console.log(
+      log.info(
         chalk.green("[Baileys][system] Connection open — gateway is ready"),
       );
     }
@@ -491,9 +496,9 @@ const initializeSocket = async () => {
     const sender = msg.key.remoteJid?.split("@")[0] || "Unknown";
     const messageType = Object.keys(msg.message)[0] || "Unknown";
 
-    console.log(chalk.magenta(whatsappConnectionLog.MESSAGE.RECEIVED));
-    console.log(chalk.white(`From: ${sender}`));
-    console.log(chalk.white(`Type: ${messageType}`));
+    log.info(chalk.magenta(whatsappConnectionLog.MESSAGE.RECEIVED));
+    log.info(chalk.white(`From: ${sender}`));
+    log.info(chalk.white(`Type: ${messageType}`));
   });
 
   return newSock;
@@ -521,7 +526,7 @@ export const ensureConnected = async ({ timeoutMs = 15000 } = {}) => {
   if (status === "auth_required" || status === "qr_required") return null;
 
   whatsappConnect().catch((err) => {
-    console.error(
+    log.error(
       `[Baileys][system] connect failed: ${err.message}`,
     );
   });

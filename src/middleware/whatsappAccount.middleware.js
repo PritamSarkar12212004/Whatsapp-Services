@@ -1,3 +1,7 @@
+import { createLogger } from "../logs/logger.js";
+
+const log = createLogger("whatsappAccount.middleware");
+
 import WhatsappAccount from "../models/whatsapp/whatsappAccount.model.js";
 import {
   buildWaKey,
@@ -55,7 +59,7 @@ const whatsappAccountMiddleware = async (req, res, next) => {
 
     return next();
   } catch (err) {
-    console.error("[Accounts] resolve failed:", err.message);
+    log.error("[Accounts] resolve failed:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Could not resolve WhatsApp account" });

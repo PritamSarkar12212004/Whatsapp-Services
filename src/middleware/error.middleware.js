@@ -1,5 +1,9 @@
+import { createLogger } from "../logs/logger.js";
+
+const log = createLogger("http");
+
 const GlobalErrorHandler = (err, req, res, next) => {
-  console.error(
+  log.error(
     `[${new Date().toISOString()}] GLOBAL ERROR: ${req.method} ${req.originalUrl} - ${err.message}`,
     err,
   );

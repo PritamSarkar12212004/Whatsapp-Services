@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("otp-verify.controller");
+
 import { decryptHashing } from "../../../utils/encrypttion/hashing.util.js";
 import otpModel from "../../../models/otp/otp.model.js";
 import userProfileModel from "../../../models/user/userProfile.model.js";
@@ -78,13 +82,13 @@ const verifyOtpController = async (req, res) => {
         reason: "login",
         minIntervalMs: 60 * 1000,
       }).catch((err) => {
-        console.error("[Contacts Sync] Login-triggered sync failed:", err.message);
+        log.error("[Contacts Sync] Login-triggered sync failed:", err.message);
       });
     }
 
     return res.status(200).json(response);
   } catch (err) {
-    console.error("Error verifying OTP:", err);
+    log.error("Error verifying OTP:", err);
 
     return res.status(500).json({
       status: "error",

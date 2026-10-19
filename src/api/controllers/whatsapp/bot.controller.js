@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("bot.controller");
+
 /**
  * Bots API — create/manage automation personas and switch them on per group.
  *
@@ -192,7 +196,7 @@ export const listBotsController = async (req, res) => {
       data: bots,
     });
   } catch (err) {
-    console.error("Error listing bots:", err.message);
+    log.error("Error listing bots:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to list bots" });
@@ -222,7 +226,7 @@ export const createBotController = async (req, res) => {
     invalidateBotCache(accountKeyOf(req));
     return res.status(201).json({ status: "success", data: bot });
   } catch (err) {
-    console.error("Error creating bot:", err.message);
+    log.error("Error creating bot:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to create bot" });
@@ -235,7 +239,7 @@ export const getBotController = async (req, res) => {
     if (!found) return;
     return res.status(200).json({ status: "success", data: found.bot });
   } catch (err) {
-    console.error("Error getting bot:", err.message);
+    log.error("Error getting bot:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to get bot" });
@@ -263,7 +267,7 @@ export const updateBotController = async (req, res) => {
     invalidateBotCache(found.accountKey);
     return res.status(200).json({ status: "success", data: bot });
   } catch (err) {
-    console.error("Error updating bot:", err.message);
+    log.error("Error updating bot:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to update bot" });
@@ -287,7 +291,7 @@ export const deleteBotController = async (req, res) => {
       deleted: result.deletedCount > 0,
     });
   } catch (err) {
-    console.error("Error deleting bot:", err.message);
+    log.error("Error deleting bot:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to delete bot" });
@@ -313,7 +317,7 @@ export const duplicateBotController = async (req, res) => {
     invalidateBotCache(found.accountKey);
     return res.status(201).json({ status: "success", data: copy });
   } catch (err) {
-    console.error("Error duplicating bot:", err.message);
+    log.error("Error duplicating bot:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to duplicate bot" });
@@ -335,7 +339,7 @@ export const setBotStatusController = async (req, res) => {
     invalidateBotCache(found.accountKey);
     return res.status(200).json({ status: "success", data: bot });
   } catch (err) {
-    console.error("Error setting bot status:", err.message);
+    log.error("Error setting bot status:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to update bot status" });
@@ -376,7 +380,7 @@ export const attachBotGroupController = async (req, res) => {
     invalidateBotCache(found.accountKey, jid);
     return res.status(200).json({ status: "success", data: bot });
   } catch (err) {
-    console.error("Error attaching bot to group:", err.message);
+    log.error("Error attaching bot to group:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to attach bot to group" });
@@ -398,7 +402,7 @@ export const detachBotGroupController = async (req, res) => {
     invalidateBotCache(found.accountKey, jid);
     return res.status(200).json({ status: "success", data: bot });
   } catch (err) {
-    console.error("Error detaching bot from group:", err.message);
+    log.error("Error detaching bot from group:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to detach bot from group" });
@@ -437,7 +441,7 @@ export const groupBotsController = async (req, res) => {
       data: { attached, available: others },
     });
   } catch (err) {
-    console.error("Error getting group bots:", err.message);
+    log.error("Error getting group bots:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to get bots for group" });
@@ -457,7 +461,7 @@ export const simulateBotController = async (req, res) => {
 
     return res.status(200).json({ status: "success", data: result });
   } catch (err) {
-    console.error("Error simulating bot:", err.message);
+    log.error("Error simulating bot:", err.message);
     return res
       .status(500)
       .json({ status: "error", message: "Failed to simulate bot" });

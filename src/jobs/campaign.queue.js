@@ -1,3 +1,7 @@
+import { createLogger } from "../logs/logger.js";
+
+const log = createLogger("crm.queue");
+
 /**
  * In-process campaign & message queue worker.
  *
@@ -154,7 +158,7 @@ const recoverPendingJobs = async () => {
             recipientIds: toRecover.map((r) => r._id),
             ownerId: campaign.owner.toString(),
           });
-          console.log(
+          log.info(
             `[CRM Queue] Recovered ${toRecover.length} queued recipient(s) for campaign ${campaign._id}`,
           );
         }
@@ -162,7 +166,7 @@ const recoverPendingJobs = async () => {
 
       await recoverQueuedMessages();
     } catch (err) {
-      console.error("[CRM Queue] recovery error:", err.message);
+      log.error("[CRM Queue] recovery error:", err.message);
     } finally {
       pendingRecovery = null;
     }
@@ -205,7 +209,7 @@ const recoverQueuedMessages = async (ownerId = null) => {
       }
 
       if (recovered) {
-        console.log(
+        log.info(
           `[CRM Queue] Recovered ${recovered} queued message(s)${
             ownerId ? ` for owner ${ownerId}` : ""
           }`,
@@ -213,7 +217,7 @@ const recoverQueuedMessages = async (ownerId = null) => {
       }
       return recovered;
     } catch (err) {
-      console.error("[CRM Queue] queued message recovery error:", err.message);
+      log.error("[CRM Queue] queued message recovery error:", err.message);
       return 0;
     } finally {
       pendingMessageRecovery = null;
@@ -237,7 +241,7 @@ const _autoStartDue = async () => {
       .exec();
 
     for (const c of due) {
-      console.log(`[CRM Queue] Auto-starting scheduled campaign ${c._id}`);
+      log.info(`[CRM Queue] Auto-starting scheduled campaign ${c._id}`);
       const { default: campaignService } = await import("../services/messaging/campaign.service.js"
       );
       try {
@@ -245,18 +249,18 @@ const _autoStartDue = async () => {
           c.owner.toString(),
           c._id,
         );
-        console.log(
+        log.info(
           `[CRM Queue] Scheduled campaign ${c._id} started (${result.audienceTotal} recipient(s))`,
         );
       } catch (err) {
-        console.error(
+        log.error(
           `[CRM Queue] auto-start failed for campaign ${c._id}:`,
           err.message,
         );
       }
     }
   } catch (err) {
-    console.error("[CRM Queue] scheduled sweep error:", err.message);
+    log.error("[CRM Queue] scheduled sweep error:", err.message);
   }
 };
 
@@ -275,7 +279,7 @@ const _autoStartDueMessages = async () => {
       .exec();
 
     for (const msg of due) {
-      console.log(`[CRM Queue] Auto-starting scheduled message ${msg._id}`);
+      log.info(`[CRM Queue] Auto-starting scheduled message ${msg._id}`);
       await Message.updateOne(
         { _id: msg._id },
         { $set: { status: "queued" } },
@@ -291,7 +295,7 @@ const _autoStartDueMessages = async () => {
       });
     }
   } catch (err) {
-    console.error("[CRM Queue] scheduled message sweep error:", err.message);
+    log.error("[CRM Queue] scheduled message sweep error:", err.message);
   }
 };
 
@@ -317,7 +321,7 @@ const _recoverStuckSending = async () => {
         { _id: msg._id },
         { $set: { status: "queued" } },
       ).exec();
-      console.log(`[CRM Queue] Recovering stuck sending message ${msg._id}`);
+      log.info(`[CRM Queue] Recovering stuck sending message ${msg._id}`);
       enqueueMessage({
         messageId: msg._id.toString(),
         ownerId: msg.owner.toString(),
@@ -329,7 +333,7 @@ const _recoverStuckSending = async () => {
       });
     }
   } catch (err) {
-    console.error("[CRM Queue] stuck sending recovery error:", err.message);
+    log.error("[CRM Queue] stuck sending recovery error:", err.message);
   }
 };
 
@@ -376,7 +380,7 @@ const _markRecipientSkipped = async (job) => {
     queuedRecipientIds.delete(job.recipientId);
     await incrementCampaignStat(job.campaignId, "skipped");
   } catch (err) {
-    console.error("[CRM Queue] mark skipped error:", err.message);
+    log.error("[CRM Queue] mark skipped error:", err.message);
   }
 };
 
@@ -423,7 +427,7 @@ const _sendCampaignRecipient = async (job) => {
     recipient.error = result.error || "WhatsApp not connected";
     await recipient.save();
     queuedRecipientIds.delete(job.recipientId);
-    console.warn(
+    log.warn(
       `[CRM Queue] WhatsApp session unavailable for ${job.ownerId} ` +
         `(${result.code}) — recipient ${job.recipientId} kept queued`,
     );
@@ -455,7 +459,7 @@ const _sendCampaignRecipient = async (job) => {
       status: "sent",
       sentAt: new Date(),
     }).catch((err) =>
-      console.error("[CRM Queue] message create error:", err.message),
+      log.error("[CRM Queue] message create error:", err.message),
     );
 
     await logActivity(job.ownerId, recipient.contact, "campaign_sent", {
@@ -516,7 +520,7 @@ const _sendMessage = async (job) => {
       { $set: { status: "queued", error: result.error } },
     ).exec();
     queuedMessageIds.delete(String(job.messageId));
-    console.warn(
+    log.warn(
       `[CRM Queue] WhatsApp session unavailable for ${job.ownerId} ` +
         `(${result.code}) — message ${job.messageId} kept queued`,
     );
@@ -588,7 +592,7 @@ const _sendJob = async (job) => {
     } else {
       queuedMessageIds.delete(String(job.messageId));
     }
-    console.error("[CRM Queue] job error:", err.message);
+    log.error("[CRM Queue] job error:", err.message);
   }
 };
 
@@ -653,7 +657,7 @@ const _process = async () => {
       }
     }
   } catch (err) {
-    console.error("[CRM Queue] worker error:", err.message);
+    log.error("[CRM Queue] worker error:", err.message);
   } finally {
     processing = false;
   }

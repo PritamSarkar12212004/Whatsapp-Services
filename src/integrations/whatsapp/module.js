@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("wa.send");
+
 import { getSocket, getSocketInfo } from "./manager.js";
 import { restartConnection } from "./connection.js";
 import { promiseTimeout } from "@whiskeysockets/baileys";
@@ -29,7 +33,7 @@ export const TRANSIENT_SEND_ERRORS = new Set([
 
 const logSocketLookup = (ownerKey, client) => {
   const info = getSocketInfo(ownerKey);
-  console.warn(
+  log.warn(
     "[WhatsApp Send] Session lookup unavailable",
     JSON.stringify({
       ...info,
@@ -81,13 +85,13 @@ const whatsappModule = async (client, number, otp, content) => {
         .catch(reject);
     });
 
-    console.log(
+    log.info(
       `OTP sent successfully via WhatsApp. Message ID: ${result.key.id}`,
     );
     return { success: true, messageId: result.key.id };
   } catch (err) {
     // Never log the OTP itself.
-    console.error(`[OTP] send failed for ${phoneNumber}:`, err.message);
+    log.error(`[OTP] send failed for ${phoneNumber}:`, err.message);
     // A timeout / closed ws means the socket is half-dead: rebuild it so the
     // next request does not fail too.
     restartConnection(`OTP send failed: ${err.message}`);
@@ -106,7 +110,7 @@ const whatsappModule = async (client, number, otp, content) => {
 export const sendUserMessage = async (userId, number, message) => {
   try {
     if (!userId || !number || !message) {
-      console.error("userId, number, and message are required");
+      log.error("userId, number, and message are required");
       return { success: false, error: "Missing required parameters" };
     }
 
@@ -133,7 +137,7 @@ export const sendUserMessage = async (userId, number, message) => {
     let phoneNumber = number.toString().replace(/\D/g, "");
     if (phoneNumber.length === 10) phoneNumber = `91${phoneNumber}`;
     else if (phoneNumber.length !== 12) {
-      console.error(`Invalid phone number: ${number}`);
+      log.error(`Invalid phone number: ${number}`);
       return {
         success: false,
         error: "Invalid phone number",
@@ -147,12 +151,12 @@ export const sendUserMessage = async (userId, number, message) => {
       client.sendMessage(chatId, { text: message }).then(resolve).catch(reject);
     });
 
-    console.log(
+    log.info(
       `Message sent via user ${userId}'s WhatsApp. Message ID: ${result.key.id}`,
     );
     return { success: true, messageId: result.key.id };
   } catch (err) {
-    console.error(err, { userId, phone: number });
+    log.error(err, { userId, phone: number });
     return { success: false, error: err.message, code: SEND_ERROR.SEND_FAILED };
   }
 };
@@ -270,12 +274,12 @@ export const sendUserMediaMessage = async (userId, number, opts = {}) => {
       sendPromise.then(resolve).catch(reject);
     });
 
-    console.log(
+    log.info(
       `Message (${type}) sent via user ${userId}'s WhatsApp. Message ID: ${result.key.id}`,
     );
     return { success: true, messageId: result.key.id };
   } catch (err) {
-    console.error(err, { userId, phone: number, type });
+    log.error(err, { userId, phone: number, type });
     return { success: false, error: err.message, code: SEND_ERROR.SEND_FAILED };
   }
 };

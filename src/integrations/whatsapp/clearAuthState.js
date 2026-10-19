@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("clearAuthState");
+
 import fs from "fs";
 import path from "path";
 import { clearMongoAuthState, SYSTEM_OWNER_KEY } from "./authState.js";
@@ -34,11 +38,11 @@ const clearAuthState = async (userId) => {
   // 1. MongoDB — the authoritative store.
   try {
     const deleted = await clearMongoAuthState(scope);
-    console.log(
+    log.info(
       `✅ WhatsApp auth state cleared ${label} in MongoDB (${deleted} doc(s))`,
     );
   } catch (err) {
-    console.error("Error clearing Mongo auth state:", err.message);
+    log.error("Error clearing Mongo auth state:", err.message);
   }
 
   // 2. Legacy disk copy.
@@ -48,7 +52,7 @@ const clearAuthState = async (userId) => {
       const userAuthPath = path.join(AUTH_BASE_FOLDER, folderSafeKey(userId));
       if (fs.existsSync(userAuthPath)) {
         fs.rmSync(userAuthPath, { recursive: true, force: true });
-        console.log(`✅ WhatsApp auth folder removed for user ${userId}`);
+        log.info(`✅ WhatsApp auth folder removed for user ${userId}`);
       }
     } else if (fs.existsSync(AUTH_BASE_FOLDER)) {
       const files = fs.readdirSync(AUTH_BASE_FOLDER, { withFileTypes: true });
@@ -59,11 +63,11 @@ const clearAuthState = async (userId) => {
         removed += 1;
       }
       if (removed) {
-        console.log(`✅ WhatsApp auth files removed (${removed} file(s))`);
+        log.info(`✅ WhatsApp auth files removed (${removed} file(s))`);
       }
     }
   } catch (err) {
-    console.error("Error clearing auth state:", err.message);
+    log.error("Error clearing auth state:", err.message);
   }
 };
 

@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("contact.controller");
+
 import contactService from "../../../services/messaging/contact.service.js";
 import { triggerContactSync } from "../../../integrations/whatsapp/manager.js";
 import { parseCsv, csvRowsToObject, toCsv } from "../../../utils/messaging/csv.util.js";
@@ -49,7 +53,7 @@ const contactController = {
         reason: "list-open",
         minIntervalMs: 15 * 60 * 1000,
       }).catch((err) => {
-        console.error("[Contacts Sync] List-open triggered sync failed:", err.message);
+        log.error("[Contacts Sync] List-open triggered sync failed:", err.message);
       });
 
       return res.status(200).json({

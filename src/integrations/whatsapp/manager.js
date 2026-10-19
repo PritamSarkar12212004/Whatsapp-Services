@@ -1,3 +1,7 @@
+import { createLogger, baileysLogger } from "../../logs/logger.js";
+
+const log = createLogger("wa.sessions");
+
 import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
@@ -119,7 +123,7 @@ const armStuckWatchdog = (userId, session) => {
     session.stuckRecoveries = (session.stuckRecoveries || 0) + 1;
 
     if (session.stuckRecoveries > MAX_STUCK_RECOVERIES) {
-      console.error(
+      log.error(
         chalk.red(
           `[Baileys] Connection stuck for user ${userId} after ${MAX_STUCK_RECOVERIES} restarts — handing control back to the client`,
         ),
@@ -133,7 +137,7 @@ const armStuckWatchdog = (userId, session) => {
       return;
     }
 
-    console.log(
+    log.info(
       chalk.yellow(
         `[Baileys] Connection stuck in "connecting" for user ${userId} — restarting socket (attempt ${session.stuckRecoveries}/${MAX_STUCK_RECOVERIES})`,
       ),
@@ -189,7 +193,7 @@ const updateDbStatus = async (key, status, extra = {}) => {
       { upsert: true, returnDocument: "after" },
     );
   } catch (err) {
-    console.error(`[Baileys] DB status update error for ${key}:`, err.message);
+    log.error(`[Baileys] DB status update error for ${key}:`, err.message);
   }
 };
 
@@ -211,7 +215,7 @@ const rememberAccountStatus = async (key, status, extra = {}) => {
       { upsert: true },
     );
   } catch (err) {
-    console.error(
+    log.error(
       `[Baileys] Account row update error for ${key}:`,
       err.message,
     );
@@ -231,7 +235,7 @@ const connect = async (userId, { force = false } = {}) => {
   let session = sessions.get(userId);
 
   if (force && session) {
-    console.log(
+    log.info(
       chalk.yellow(`[Baileys] Forcing a fresh socket for user ${userId}`),
     );
     teardownSocket(session);
@@ -245,7 +249,7 @@ const connect = async (userId, { force = false } = {}) => {
 
   // Socket exists and is not disconnected (connecting, qr_required, connected) → reuse
   if (session && session.socket && session.status !== "disconnected") {
-    console.log(
+    log.info(
       chalk.green("[Baileys] Connection already active, reusing existing socket"),
     );
     return session.socket;
@@ -253,7 +257,7 @@ const connect = async (userId, { force = false } = {}) => {
 
   // Already initializing → wait for existing connection
   if (session && session.initializationPromise) {
-    console.log(
+    log.info(
       chalk.yellow(
         "[Baileys] Connection already initializing, waiting for existing connection",
       ),
@@ -305,7 +309,7 @@ const initializeSocket = async (key, session) => {
     session.socket = null;
   }
 
-  console.log(
+  log.info(
     chalk.cyan(`[Baileys] Initializing WhatsApp connection for user ${userId}...`),
   );
 
@@ -319,7 +323,7 @@ const initializeSocket = async (key, session) => {
     // secondary accounts share the primary account's Baileys credentials.
     ({ state, saveCreds } = await useMongoAuthState(key));
   } catch (err) {
-    console.error(
+    log.error(
       chalk.red(
         `[Baileys] Failed to load auth state for user ${userId}: ${err.message}`,
       ),
@@ -334,14 +338,14 @@ const initializeSocket = async (key, session) => {
   // linked in that case. Only warn when there is no linked identity at all.
   const linkedIdentity = state?.creds?.me?.id;
   if (linkedIdentity) {
-    console.log(
+    log.info(
       chalk.cyan(
         `[Baileys] Loaded existing WhatsApp identity for user ${userId} ` +
           `(${String(linkedIdentity).split(":")[0]}) — no QR scan needed`,
       ),
     );
   } else {
-    console.log(
+    log.info(
       chalk.yellow(
         `[Baileys] No linked WhatsApp identity for user ${userId} — a QR scan is required`,
       ),
@@ -350,7 +354,7 @@ const initializeSocket = async (key, session) => {
 
   // Check if session was disconnected during initialization
   if (session.disconnecting || superseded()) {
-    console.log(
+    log.info(
       chalk.yellow(
         `[Baileys] Session for user ${userId} was disconnected during initialization`,
       ),
@@ -370,13 +374,13 @@ const initializeSocket = async (key, session) => {
       "fetchLatestBaileysVersion",
     );
     version = fetchedVersion;
-    console.log(
+    log.info(
       chalk.cyan(
         whatsappConnectionLog.CONNECTION.VERSION_USED(version.join(".")),
       ),
     );
   } catch (err) {
-    console.log(
+    log.info(
       chalk.yellow(whatsappConnectionLog.WARNING.VERSION_FETCH_FAILED),
     );
   }
@@ -385,6 +389,7 @@ const initializeSocket = async (key, session) => {
 
   const sock = makeWASocket({
     auth: state,
+    logger: baileysLogger.child({ account: String(key) }),
     browser: Browsers.windows("Chrome"),
     // Explicit timeouts so a dead handshake fails fast instead of hanging the
     // Session Manager in "connecting" forever (the UI has nothing to show
@@ -422,7 +427,7 @@ const initializeSocket = async (key, session) => {
       // The contact book belongs to the login, so it is filled from the
       // primary number only — an extra number's chats are not mixed into it.
       if (!isPrimaryAccount) {
-        console.log(
+        log.info(
           chalk.cyan(
             `[Contacts Sync] Skipped for ${key} — contacts sync with the primary number`,
           ),
@@ -430,7 +435,7 @@ const initializeSocket = async (key, session) => {
         return;
       }
 
-      console.log(
+      log.info(
         `[Contacts Sync] Starting contact synchronization for user ${userId}`,
       );
       contactSyncService
@@ -439,7 +444,7 @@ const initializeSocket = async (key, session) => {
           authFolder: getAuthFolder(key),
         })
         .catch((error) => {
-          console.error(
+          log.error(
             `[Contacts Sync] Error during contact synchronization:`,
             error.message,
           );
@@ -450,7 +455,7 @@ const initializeSocket = async (key, session) => {
 
   sock.ev.on("connection.update", async (update) => {
     if (!isCurrentSocket()) {
-      console.warn(
+      log.warn(
         `[Baileys] Ignoring stale connection update for session ${key}`,
       );
       return;
@@ -465,7 +470,7 @@ const initializeSocket = async (key, session) => {
       // The socket is alive — stop treating this attempt as stuck.
       session.connectingSince = null;
       clearStuckWatchdog(session);
-      console.log(
+      log.info(
         chalk.cyan(`[Baileys] QR generated for ${key}`),
       );
       await updateDbStatus(key, "qr_required");
@@ -481,14 +486,14 @@ const initializeSocket = async (key, session) => {
       session.initialSyncDone = false;
       contactSyncService.clearUserCache(userId);
 
-      console.log(chalk.red(`[Baileys] WhatsApp disconnected for ${key}`));
-      console.log(
+      log.info(chalk.red(`[Baileys] WhatsApp disconnected for ${key}`));
+      log.info(
         chalk.yellow(`[Baileys] Disconnect reason code: ${statusCode}`),
       );
 
       // Permanent logout → clean up, do NOT reconnect
       if (statusCode === DisconnectReason.loggedOut) {
-        console.log(chalk.red(`[Baileys] ${key} logged out permanently`));
+        log.info(chalk.red(`[Baileys] ${key} logged out permanently`));
         session.status = "logged_out";
         await updateDbStatus(key, "logged_out", {
           lastDisconnectedAt: new Date(),
@@ -509,7 +514,7 @@ const initializeSocket = async (key, session) => {
         session.socket = null;
         session.status = "disconnected";
         session.conflictRetries = (session.conflictRetries || 0) + 1;
-        console.warn(
+        log.warn(
           chalk.yellow(
             `[Baileys] 440 conflict for ${key}: the same credentials are connected ` +
               "from another running instance (local + VPS share this MongoDB). " +
@@ -526,7 +531,7 @@ const initializeSocket = async (key, session) => {
           !session.reconnecting
         ) {
           const retryDelay = 5000 * session.conflictRetries;
-          console.log(
+          log.info(
             chalk.yellow(
               `[Baileys] Conflict (440) for user ${userId} — retrying in ${retryDelay}ms ` +
                 `(attempt ${session.conflictRetries}/${MAX_CONFLICT_RETRIES})`,
@@ -536,13 +541,13 @@ const initializeSocket = async (key, session) => {
           session.reconnectTimer = setTimeout(() => {
             session.reconnecting = false;
             connect(key).catch((err) =>
-              console.error(
+              log.error(
                 `[Baileys] reconnect failed for ${key}: ${err.message}`,
               ),
             );
           }, retryDelay);
         } else {
-          console.log(
+          log.info(
             chalk.red(
               `[Baileys] Conflict (440) persisted for user ${userId} — stopping retries`,
             ),
@@ -566,7 +571,7 @@ const initializeSocket = async (key, session) => {
         session.reconnecting = true;
         session.retryCount++;
         const delay = Math.min(3000 * (session.retryCount + 1), 15000);
-        console.log(
+        log.info(
           chalk.blue(
             `[Baileys] Reconnecting user ${userId}... (${session.retryCount})`,
           ),
@@ -574,7 +579,7 @@ const initializeSocket = async (key, session) => {
         session.reconnectTimer = setTimeout(() => {
           session.reconnecting = false;
           connect(key).catch((err) =>
-            console.error(
+            log.error(
               `[Baileys] reconnect failed for ${key}: ${err.message}`,
             ),
           );
@@ -588,7 +593,7 @@ const initializeSocket = async (key, session) => {
       session.stuckRecoveries = 0;
       session.connectingSince = null;
       clearStuckWatchdog(session);
-      console.log(
+      log.info(
         chalk.green(`[Baileys] WhatsApp session registered and connected for ${key}`),
       );
       await updateDbStatus(key, "connected", {
@@ -613,7 +618,7 @@ const initializeSocket = async (key, session) => {
           campaignQueue.recoverQueuedMessages(userId),
         )
         .catch((err) =>
-          console.error(
+          log.error(
             `[Baileys] queued message recovery failed for ${key}: ${err.message}`,
           ),
         );
@@ -633,7 +638,7 @@ const initializeSocket = async (key, session) => {
     const msg = m.messages[0];
     if (!msg.message) return;
     const sender = msg.key.remoteJid?.split("@")[0] || "Unknown";
-    console.log(
+    log.info(
       chalk.magenta(
         `[Baileys] 📩 New message from ${sender} for user ${userId}`,
       ),
@@ -646,7 +651,7 @@ const initializeSocket = async (key, session) => {
     try {
       await applyReceipts(userId, updates);
     } catch (err) {
-      console.error(
+      log.error(
         `[Baileys] receipt handler error for user ${userId}:`,
         err.message,
       );
@@ -659,7 +664,7 @@ const initializeSocket = async (key, session) => {
     try {
       await applyGroupReceipts(userId, receipts);
     } catch (err) {
-      console.error(
+      log.error(
         `[Baileys] group receipt handler error for user ${userId}:`,
         err.message,
       );
@@ -745,7 +750,7 @@ const getStatus = (userId) => {
 const disconnect = async (userId) => {
   const session = sessions.get(userId);
   if (!session) {
-    console.log(chalk.yellow(`[Baileys] No active session for user ${userId}`));
+    log.info(chalk.yellow(`[Baileys] No active session for user ${userId}`));
     return;
   }
 
@@ -781,7 +786,7 @@ const disconnect = async (userId) => {
   });
 
   sessions.delete(userId);
-  console.log(
+  log.info(
     chalk.blue(`[Baileys] User ${userId} disconnected and session removed`),
   );
 };
@@ -806,11 +811,11 @@ const logout = async (userId) => {
       // The connection closes with DisconnectReason.loggedOut → the close
       // handler below clears auth state and removes the session as well.
       await session.socket.logout();
-      console.log(
+      log.info(
         chalk.red(`[Baileys] Logout request sent for user ${userId}`),
       );
     } catch (err) {
-      console.log(
+      log.info(
         chalk.yellow(
           `[Baileys] socket.logout() failed for ${userId}: ${err.message}`,
         ),
@@ -842,7 +847,7 @@ const logout = async (userId) => {
     lastDisconnectedAt: new Date(),
   });
 
-  console.log(
+  log.info(
     chalk.red(
       `[Baileys] User ${userId} fully logged out — QR scan required to reconnect`,
     ),
@@ -877,7 +882,7 @@ const sessionWatchdogTick = async () => {
     if (session.disconnecting || session.reconnecting) continue;
 
     if (session.status === "connected" && !isSessionSocketHealthy(session)) {
-      console.warn(
+      log.warn(
         chalk.yellow(
           `[Baileys] Session ${key} is marked connected but its socket is closed — rebuilding`,
         ),
@@ -885,7 +890,7 @@ const sessionWatchdogTick = async () => {
       teardownSocket(session);
       session.status = "disconnected";
       connect(key).catch((err) =>
-        console.error(
+        log.error(
           `[Baileys] watchdog reconnect failed for ${key}: ${err.message}`,
         ),
       );
@@ -907,13 +912,13 @@ const sessionWatchdogTick = async () => {
       // A stale "connecting"/"qr_required" row without a socket is just noise.
       if (!session) {
         if (doc.status === "connected") {
-          console.log(
+          log.info(
             chalk.cyan(
               `[Baileys] Reviving missing session ${key} (DB status: connected)`,
             ),
           );
           connect(key).catch((err) =>
-            console.error(
+            log.error(
               `[Baileys] revive failed for ${key}: ${err.message}`,
             ),
           );
@@ -927,18 +932,18 @@ const sessionWatchdogTick = async () => {
         !session.reconnecting &&
         !session.initializationPromise
       ) {
-        console.log(
+        log.info(
           chalk.cyan(`[Baileys] Reconnecting idle session ${key}`),
         );
         connect(key).catch((err) =>
-          console.error(
+          log.error(
             `[Baileys] watchdog reconnect failed for ${key}: ${err.message}`,
           ),
         );
       }
     }
   } catch (err) {
-    console.error("[Baileys] Session watchdog DB sweep error:", err.message);
+    log.error("[Baileys] Session watchdog DB sweep error:", err.message);
   }
 };
 
@@ -946,7 +951,7 @@ const startSessionWatchdog = () => {
   if (sessionWatchdogTimer) return;
   sessionWatchdogTimer = setInterval(() => {
     sessionWatchdogTick().catch((err) =>
-      console.error("[Baileys] Session watchdog error:", err.message),
+      log.error("[Baileys] Session watchdog error:", err.message),
     );
   }, SESSION_WATCHDOG_INTERVAL_MS);
   sessionWatchdogTimer.unref?.();
@@ -957,7 +962,7 @@ const startSessionWatchdog = () => {
  * Only reconnects sessions marked as "connected" in DB.
  */
 const restoreSessions = async () => {
-  console.log(
+  log.info(
     chalk.cyan("[Baileys] Restoring active WhatsApp sessions..."),
   );
   try {
@@ -965,20 +970,20 @@ const restoreSessions = async () => {
     for (const session of activeSessions) {
       // `sessionId` holds the account key (userId or userId::accountId).
       const key = session.sessionId || session.userId.toString();
-      console.log(chalk.cyan(`[Baileys] Restoring session for ${key}`));
+      log.info(chalk.cyan(`[Baileys] Restoring session for ${key}`));
       connect(key).catch((err) =>
-        console.error(
+        log.error(
           `[Baileys] restore failed for ${key}: ${err.message}`,
         ),
       );
     }
     if (activeSessions.length === 0) {
-      console.log(
+      log.info(
         chalk.cyan("[Baileys] No active sessions to restore"),
       );
     }
   } catch (err) {
-    console.error("[Baileys] Error restoring sessions:", err.message);
+    log.error("[Baileys] Error restoring sessions:", err.message);
   }
 };
 
@@ -1008,7 +1013,7 @@ const shutdownAll = async () => {
 
     session.socket = null;
     session.status = "disconnected";
-    console.log(chalk.blue(`[Baileys] Closed socket for user ${userId}`));
+    log.info(chalk.blue(`[Baileys] Closed socket for user ${userId}`));
   }
 };
 

@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("profile-update.controller");
+
 import { getSocket } from "../../../integrations/whatsapp/manager.js";
 
 /**
@@ -29,7 +33,7 @@ const getConnectedSocket = (req, res) => {
 };
 
 const sendError = (res, err) => {
-  console.error("Error updating WhatsApp profile:", err.message);
+  log.error("Error updating WhatsApp profile:", err.message);
   return res.status(500).json({
     status: "error",
     message: "Failed to update WhatsApp profile",

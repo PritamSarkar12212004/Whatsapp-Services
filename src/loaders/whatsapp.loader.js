@@ -1,3 +1,7 @@
+import { createLogger } from "../logs/logger.js";
+
+const log = createLogger("whatsapp.loader");
+
 import connectWhatsApp from "../integrations/whatsapp/connection.js";
 import {
   restoreSessions,
@@ -13,7 +17,7 @@ const initWhatsApp = async () => {
   // WHATSAPP_ENABLED=false in a local .env keeps the API usable without
   // hijacking the production WhatsApp sessions.
   if (String(process.env.WHATSAPP_ENABLED || "true").toLowerCase() === "false") {
-    console.log(
+    log.info(
       "[Baileys] WHATSAPP_ENABLED=false — skipping all WhatsApp connections on this instance",
     );
     return;
@@ -25,7 +29,7 @@ const initWhatsApp = async () => {
   // The gateway self-heals, but an initial failure must not become an
   // unhandled rejection (which kills the whole process on modern Node).
   connectWhatsApp().catch((err) =>
-    console.error("[Baileys][system] initial connect failed:", err.message),
+    log.error("[Baileys][system] initial connect failed:", err.message),
   );
   restoreSessions();
   startSessionWatchdog();

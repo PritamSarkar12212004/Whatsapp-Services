@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("qr.controller");
+
 import { getQR } from "../../../integrations/whatsapp/manager.js";
 
 const whatsappQRController = async (req, res) => {
@@ -27,7 +31,7 @@ const whatsappQRController = async (req, res) => {
       available: true,
     });
   } catch (err) {
-    console.error("Error getting QR:", err.message);
+    log.error("Error getting QR:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to get QR code",

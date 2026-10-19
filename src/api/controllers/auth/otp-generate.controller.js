@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("otp");
+
 import { ensureConnected } from "../../../integrations/whatsapp/connection.js";
 import { hashing } from "../../../utils/encrypttion/hashing.util.js";
 import { generateOtp } from "../../../utils/token/token.util.js";
@@ -25,7 +29,7 @@ const generateOtpController = async (req, res) => {
   // arrives while it is recovering can wait a few seconds instead of failing.
   const client = await ensureConnected({ timeoutMs: GATEWAY_WAIT_MS });
   if (!client) {
-    console.error(
+    log.error(
       "[OTP] WhatsApp gateway is not connected — refusing to claim delivery",
     );
     return res.status(503).json({

@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("activity.service");
+
 import ContactActivity from "../../models/messaging/contactActivity.model.js";
 
 /**
@@ -14,7 +18,7 @@ const logActivity = async (ownerId, contactId, type, metadata = {}) => {
     });
   } catch (err) {
     // Activity logging must never break the main flow
-    console.error("[CRM] Failed to log activity:", err.message);
+    log.error("[CRM] Failed to log activity:", err.message);
   }
 };
 

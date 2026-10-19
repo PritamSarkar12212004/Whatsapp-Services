@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("botRuntime.service");
+
 /**
  * Bot runtime — decides whether an incoming group message should be answered by
  * one of the bots attached to that group.
@@ -87,7 +91,7 @@ export const getBotsForGroup = async (accountKey, groupJid) => {
       groups: { $elemMatch: { jid: groupJid, enabled: true } },
     }).lean();
   } catch (err) {
-    console.error(chalk.yellow(`[Bot] Lookup failed: ${err.message}`));
+    log.error(chalk.yellow(`[Bot] Lookup failed: ${err.message}`));
   }
 
   botCache.set(cacheKey, { bots, at: Date.now() });
@@ -110,7 +114,7 @@ const bumpStats = async (botId, inc, extra = {}) => {
       { $inc: inc, $set: { "stats.lastActiveAt": new Date(), ...extra } },
     );
   } catch (err) {
-    console.error(chalk.yellow(`[Bot] Stats update failed: ${err.message}`));
+    log.error(chalk.yellow(`[Bot] Stats update failed: ${err.message}`));
   }
 };
 
@@ -123,9 +127,9 @@ const send = async (sock, groupJid, payload, options) => {
   );
 
   if (!result.sent) {
-    console.error(chalk.yellow(`[Bot] Send failed: ${result.error}`));
+    log.error(chalk.yellow(`[Bot] Send failed: ${result.error}`));
   } else if (result.error) {
-    console.warn(
+    log.warn(
       chalk.yellow(
         `[Bot] Tagging failed (${result.error}) — sent it without the tag instead` +
           ` [mentions=${(options?.mentions || []).join(",") || "-"}]`,
@@ -206,7 +210,7 @@ const botReplies = async (
         { $set: { "stats.lastActiveAt": new Date() } },
       );
     } catch (err) {
-      console.error(chalk.yellow(`[Bot] Counter update failed: ${err.message}`));
+      log.error(chalk.yellow(`[Bot] Counter update failed: ${err.message}`));
     }
   }
 
@@ -279,7 +283,7 @@ const runBot = async (sock, bot, ctx) => {
 
   if (replied) {
     await bumpStats(bot._id, { "stats.matched": 1 });
-    console.log(
+    log.info(
       chalk.cyan(
         `[Bot] ${bot.name} → ${describeTrigger(trigger)} in ${groupJid} (${senderName})`,
       ),
@@ -315,7 +319,7 @@ export const handleBotGroupMessage = async (sock, userId, ctx) => {
     }
     return false;
   } catch (err) {
-    console.error(chalk.yellow(`[Bot] handleBotGroupMessage error: ${err.message}`));
+    log.error(chalk.yellow(`[Bot] handleBotGroupMessage error: ${err.message}`));
     return false;
   }
 };
@@ -347,7 +351,7 @@ export const handleBotMemberEvent = async (sock, userId, params) => {
     }
     return false;
   } catch (err) {
-    console.error(chalk.yellow(`[Bot] handleBotMemberEvent error: ${err.message}`));
+    log.error(chalk.yellow(`[Bot] handleBotMemberEvent error: ${err.message}`));
     return false;
   }
 };

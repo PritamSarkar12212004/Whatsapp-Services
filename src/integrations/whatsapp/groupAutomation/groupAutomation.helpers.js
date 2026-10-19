@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("groupAutomation.helpers");
+
 /**
  * Pure helpers for the group automation engine.
  * No module state — safe to import from anywhere.
@@ -61,7 +65,7 @@ export const deleteMessage = async (sock, groupJid, msgKey) => {
     if (!msgKey) return;
     await sock.sendMessage(groupJid, { delete: msgKey });
   } catch (err) {
-    console.log(chalk.yellow(`[Automation] Delete failed: ${err.message}`));
+    log.info(chalk.yellow(`[Automation] Delete failed: ${err.message}`));
   }
 };
 

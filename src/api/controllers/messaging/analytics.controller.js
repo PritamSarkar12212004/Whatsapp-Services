@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("analytics.controller");
+
 import mongoose from "mongoose";
 import Message from "../../../models/messaging/message.model.js";
 import Campaign from "../../../models/messaging/campaign.model.js";
@@ -387,7 +391,7 @@ const analyticsController = {
         },
       });
     } catch (err) {
-      console.error("Error getting analytics:", err.message);
+      log.error("Error getting analytics:", err.message);
       return res.status(500).json({
         status: "error",
         message: "Failed to get analytics",

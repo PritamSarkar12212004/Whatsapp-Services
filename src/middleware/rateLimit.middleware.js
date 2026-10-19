@@ -1,3 +1,7 @@
+import { createLogger } from "../logs/logger.js";
+
+const log = createLogger("http");
+
 import rateLimit from "express-rate-limit";
 
 const rateLimiter = rateLimit({
@@ -10,7 +14,7 @@ const rateLimiter = rateLimit({
     error: "Too many requests. Please try again later.",
   },
   handler: (req, res) => {
-    console.warn(
+    log.warn(
       `[${new Date().toISOString()}] RATE LIMIT HIT: ${req.method} ${req.originalUrl}`,
     );
 

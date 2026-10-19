@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("connect.controller");
+
 import { connect, getStatus } from "../../../integrations/whatsapp/manager.js";
 
 /**
@@ -77,7 +81,7 @@ const whatsappConnectController = async (req, res) => {
       status: updatedStatus.status,
     });
   } catch (err) {
-    console.error("Error connecting WhatsApp:", err.message);
+    log.error("Error connecting WhatsApp:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to connect WhatsApp",

@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("db");
+
 import mongoose from "mongoose";
 import DataBaseLog from "../../logs/database/DataBaseLog.js";
 import chalk from "chalk";
@@ -13,7 +17,7 @@ const migrateContactJidIndex = async (db) => {
     const isPartial = jidIdx && jidIdx.partialFilterExpression;
     if (jidIdx && !isPartial) {
       await coll.dropIndex(IDX_NAME);
-      console.log(
+      log.info(
         chalk.yellow(`[DB] Dropped ${IDX_NAME} index (contacts) — not partial`),
       );
     }
@@ -32,13 +36,13 @@ const migrateContactJidIndex = async (db) => {
           name: IDX_NAME,
         },
       );
-      console.log(
+      log.info(
         chalk.green(`[DB] Created partial unique ${IDX_NAME} index (contacts)`),
       );
     }
   } catch (err) {
     // Never block startup on a migration issue — log and continue.
-    console.log(
+    log.info(
       chalk.yellow(`[DB] Contact JID index migration skipped: ${err.message}`),
     );
   }
@@ -54,7 +58,7 @@ const migrateCampaignRecipientIndex = async (db) => {
     const indexes = await coll.indexes();
     if (indexes.some((i) => i.name === OLD_IDX)) {
       await coll.dropIndex(OLD_IDX);
-      console.log(
+      log.info(
         chalk.yellow(`[DB] Dropped ${OLD_IDX} index (campaignrecipients)`),
       );
     }
@@ -64,14 +68,14 @@ const migrateCampaignRecipientIndex = async (db) => {
         { campaign: 1, contact: 1, sequence: 1 },
         { unique: true, name: NEW_IDX },
       );
-      console.log(
+      log.info(
         chalk.green(
           `[DB] Created unique ${NEW_IDX} index (campaignrecipients)`,
         ),
       );
     }
   } catch (err) {
-    console.log(
+    log.info(
       chalk.yellow(
         `[DB] Campaign recipient index migration skipped: ${err.message}`,
       ),
@@ -90,7 +94,7 @@ const Database = async () => {
     await migrateContactJidIndex(connection.connection.db);
     await migrateCampaignRecipientIndex(connection.connection.db);
 
-    console.log(
+    log.info(
       chalk.green(
         DataBaseLog.STARTUP_DATABASE(
           connection.connection.name,
@@ -99,7 +103,7 @@ const Database = async () => {
       ),
     );
   } catch (error) {
-    console.log(DataBaseLog.STARTUP_ERROR_DATABASE(error.message));
+    log.info(DataBaseLog.STARTUP_ERROR_DATABASE(error.message));
     process.exit(1);
   }
 };

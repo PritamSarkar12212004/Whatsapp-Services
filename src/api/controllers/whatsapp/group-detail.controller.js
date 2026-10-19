@@ -1,3 +1,7 @@
+import { createLogger } from "../../../logs/logger.js";
+
+const log = createLogger("group-detail.controller");
+
 import { getSocket } from "../../../integrations/whatsapp/manager.js";
 import {
   getBinaryNodeChild,
@@ -68,7 +72,7 @@ const whatsappGroupDetailController = async (req, res) => {
         rawByJid.set(rawJid, { pn: pn || pnFromJid, lid: attrs.lid || null });
       }
     } catch (err) {
-      console.error("Raw group metadata query failed:", err.message);
+      log.error("Raw group metadata query failed:", err.message);
     }
 
     const participants = [];
@@ -195,7 +199,7 @@ const whatsappGroupDetailController = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("Error fetching WhatsApp group detail:", err.message);
+    log.error("Error fetching WhatsApp group detail:", err.message);
     return res.status(500).json({
       status: "error",
       message: "Failed to fetch WhatsApp group detail",

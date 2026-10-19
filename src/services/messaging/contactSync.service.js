@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("contacts");
+
 /**
  * WhatsApp -> CRM contact synchronization (orchestrator).
  *
@@ -140,13 +144,13 @@ const recoverAppStateContacts = async (userId, sock) => {
   appStateRecoveredSockets.add(sock);
   if (contactCache.get(userId)?.size > 0) return;
   if (typeof sock.resyncAppState !== "function" || !sock.authState?.keys) {
-    console.log(
+    log.info(
       "[Contacts Sync] app-state recovery skipped (resyncAppState not exposed by this socket)",
     );
     return;
   }
 
-  console.log(
+  log.info(
     "[Contacts Sync] Requesting full app-state snapshot to recover saved contacts",
   );
 
@@ -167,7 +171,7 @@ const recoverAppStateContacts = async (userId, sock) => {
     );
 
     if (!finished) {
-      console.warn(
+      log.warn(
         "[Contacts Sync] App-state snapshot did not finish in time — continuing with the contacts already found",
       );
     }
@@ -175,7 +179,7 @@ const recoverAppStateContacts = async (userId, sock) => {
     // createBufferedFunction flushes emitted events ~100ms after completion.
     await delay(finished ? 800 : 200);
   } catch (err) {
-    console.error(
+    log.error(
       `[Contacts Sync] App-state snapshot recovery failed: ${err.message}`,
     );
   }
@@ -230,7 +234,7 @@ const fetchDirectoryContacts = async (userId, sock) => {
       ? { source: "USync queryContact", entries }
       : null;
   } catch (err) {
-    console.error(
+    log.error(
       `[Contacts Sync] USync queryContact unavailable: ${err.message}`,
     );
     return null;
@@ -295,7 +299,7 @@ const fetchSessionRegistryContacts = async (userId, authFolder) => {
       if (/^\d+$/.test(keyId)) pushNumber(keyId);
     }
   } catch (err) {
-    console.error(
+    log.error(
       `[Contacts Sync] Session contact registry (MongoDB) read failed: ${err.message}`,
     );
   }
@@ -310,7 +314,7 @@ const fetchSessionRegistryContacts = async (userId, authFolder) => {
         pushNumber(match[1]);
       }
     } catch (err) {
-      console.error(
+      log.error(
         `[Contacts Sync] Session contact registry read failed: ${err.message}`,
       );
     }
@@ -508,7 +512,7 @@ const withTimeout = (promise, ms, fallback, label) => {
     promise.finally(() => clearTimeout(timer)),
     new Promise((resolve) => {
       timer = setTimeout(() => {
-        console.warn(`[Contacts Sync] ${label} is taking longer than ${ms}ms — moving on`);
+        log.warn(`[Contacts Sync] ${label} is taking longer than ${ms}ms — moving on`);
         resolve(fallback);
       }, ms);
     }),
@@ -530,7 +534,7 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
   const lastDone = lastSyncAt.get(ownerId);
   if (minIntervalMs > 0 && lastDone && Date.now() - lastDone < minIntervalMs) {
     const ago = Math.round((Date.now() - lastDone) / 1000);
-    console.log(
+    log.info(
       `[Contacts Sync] Skipped for user ${ownerId} (last sync ${ago}s ago, min interval ${Math.round(minIntervalMs / 1000)}s)`,
     );
     return {
@@ -565,7 +569,7 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
       ensureEventListeners(ownerId, sock);
 
       const startedAt = Date.now();
-      console.log(
+      log.info(
         `[Contacts Sync] Starting for user ${ownerId} (reason: ${reason})`,
       );
 
@@ -590,7 +594,7 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
             authFolder,
           });
         } catch (err) {
-          console.error(
+          log.error(
             `[Contacts Sync] Attempt ${attempt}/${maxAttempts} failed:`,
             err.message,
           );
@@ -607,15 +611,15 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
         summary.skippedSelf = skippedSelf;
         summary.total = contacts.length;
 
-        console.log(`[Contacts Sync] Contact source: ${summary.source}`);
-        console.log(`[Contacts Sync] Raw contacts found: ${summary.found}`);
-        console.log(`[Contacts Sync] Valid contacts: ${summary.total}`);
-        console.log(`[Contacts Sync] Groups skipped: ${skippedGroups}`);
-        console.log(`[Contacts Sync] Invalid JIDs skipped: ${skippedInvalid}`);
-        console.log(`[Contacts Sync] Self skipped: ${skippedSelf}`);
+        log.info(`[Contacts Sync] Contact source: ${summary.source}`);
+        log.info(`[Contacts Sync] Raw contacts found: ${summary.found}`);
+        log.info(`[Contacts Sync] Valid contacts: ${summary.total}`);
+        log.info(`[Contacts Sync] Groups skipped: ${skippedGroups}`);
+        log.info(`[Contacts Sync] Invalid JIDs skipped: ${skippedInvalid}`);
+        log.info(`[Contacts Sync] Self skipped: ${skippedSelf}`);
 
         if (contacts.length > 0) {
-          console.log(
+          log.info(
             `[Contacts Sync] Discovery took ${Date.now() - discoveryStart}ms — upserting ${contacts.length} contacts`,
           );
 
@@ -637,7 +641,7 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
             summary.completed = false;
             summary.timedOut = true;
             lastSyncAt.set(ownerId, Date.now());
-            console.warn(
+            log.warn(
               `[Contacts Sync] Database phase timed out after ${Date.now() - startedAt}ms`,
             );
             return summary;
@@ -648,10 +652,10 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
           summary.unchanged = syncResult.unchanged;
           summary.completed = true;
           lastSyncAt.set(ownerId, Date.now());
-          console.log(
+          log.info(
             `[Contacts Sync] Inserted: ${syncResult.inserted} · Updated: ${syncResult.updated} · Already current: ${syncResult.unchanged}`,
           );
-          console.log(
+          log.info(
             `[Contacts Sync] Completed in ${Date.now() - startedAt}ms (database round ${Date.now() - dbStart}ms)`,
           );
           return summary;
@@ -666,11 +670,11 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
         }
 
         // Still nothing — log WHY, then retry with backoff.
-        console.log(
+        log.info(
           `[Contacts Sync] No contacts available from ${summary.source}`,
         );
         try {
-          console.log(
+          log.info(
             `[Contacts Sync] sock.user.contacts count: ${
               Array.isArray(sock?.user?.contacts)
                 ? sock.user.contacts.length
@@ -678,21 +682,21 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
             }`,
           );
         } catch {
-          console.log(
+          log.info(
             `[Contacts Sync] sock.user.contacts count: N/A (not exposed)`,
           );
         }
-        console.log(
+        log.info(
           `[Contacts Sync] store/contact cache count: ${
             contactCache.get(ownerId)?.size || 0
           }`,
         );
-        console.log(
+        log.info(
           `[Contacts Sync] LID mappings cached: ${
             lidToPn.get(ownerId)?.size || 0
           }`,
         );
-        console.log(
+        log.info(
           `[Contacts Sync] app-state/contact sync status: ${
             (contactCache.get(ownerId)?.size || 0) > 0
               ? "app-state contacts received"
@@ -702,20 +706,20 @@ const syncContactsOnConnect = async (ownerId, sock, options = {}) => {
 
         if (attempt < maxAttempts) {
           const retryDelay = RETRY_DELAYS_MS[attempt - 1];
-          console.log(
+          log.info(
             `[Contacts Sync] Retrying in ${retryDelay} ms (attempt ${attempt}/${maxAttempts})`,
           );
           await delay(retryDelay);
         }
       }
 
-      console.log(
+      log.info(
         `[Contacts Sync] Completed (no contacts after ${maxAttempts} attempts)`,
       );
       lastSyncAt.set(ownerId, Date.now());
       return summary;
     } catch (error) {
-      console.error(
+      log.error(
         `[Contacts Sync] Error during synchronization:`,
         error.message,
       );

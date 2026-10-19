@@ -1,3 +1,7 @@
+import { createLogger } from "../logs/logger.js";
+
+const log = createLogger("whatsappAccounts.migration");
+
 /**
  * Multi-number index migration.
  *
@@ -22,11 +26,11 @@ export const syncWhatsappAccountIndexes = async () => {
     for (const model of [WhatsAppSession, groupManagerModel, WhatsappAccount]) {
       await model.syncIndexes();
     }
-    console.log(chalk.cyan("[Accounts] WhatsApp account indexes are in sync"));
+    log.info(chalk.cyan("[Accounts] WhatsApp account indexes are in sync"));
   } catch (err) {
     // Index work must never stop the server: a stale index only affects the
     // extra numbers, while the primary number keeps working.
-    console.error(
+    log.error(
       chalk.yellow(`[Accounts] Index sync failed: ${err.message}`),
     );
   }

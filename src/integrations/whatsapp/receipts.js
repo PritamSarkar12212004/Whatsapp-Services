@@ -1,3 +1,7 @@
+import { createLogger } from "../../logs/logger.js";
+
+const log = createLogger("receipts");
+
 /**
  * Delivery / read receipt handling for outbound WhatsApp messages.
  *
@@ -124,7 +128,7 @@ const applyBatch = async (ownerId, entries, channel) => {
             );
             if (outcome in summary) summary[outcome] += 1;
         } catch (err) {
-            console.error(
+            log.error(
                 `[Baileys] receipt apply error for ${ownerId} (${whatsappMessageId}):`,
                 err.message,
             );
@@ -133,7 +137,7 @@ const applyBatch = async (ownerId, entries, channel) => {
 
     const changed = summary.delivered + summary.read;
     if (changed || summary.unknown) {
-        console.log(
+        log.info(
             `[Baileys] ${channel} receipts for ${ownerId}: ` +
                 `delivered=${summary.delivered} read=${summary.read} ` +
                 `unknown=${summary.unknown}`,
