@@ -509,6 +509,13 @@ const initializeSocket = async (key, session) => {
         session.socket = null;
         session.status = "disconnected";
         session.conflictRetries = (session.conflictRetries || 0) + 1;
+        console.warn(
+          chalk.yellow(
+            `[Baileys] 440 conflict for ${key}: the same credentials are connected ` +
+              "from another running instance (local + VPS share this MongoDB). " +
+              "Only one instance may own WhatsApp sessions.",
+          ),
+        );
 
         await updateDbStatus(key, "disconnected", {
           lastDisconnectedAt: new Date(),

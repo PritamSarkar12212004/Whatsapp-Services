@@ -459,7 +459,9 @@ const initializeSocket = async () => {
       if (statusCode === 440) {
         console.log(
           chalk.yellow(
-            "[Baileys][system] Conflict (440) — another socket uses these credentials; retrying",
+            "[Baileys][system] Conflict (440) — these credentials are in use by ANOTHER " +
+              "running instance (e.g. local + VPS). WhatsApp allows one socket per " +
+              "device, so the instances keep kicking each other. Stop one instance.",
           ),
         );
       }
