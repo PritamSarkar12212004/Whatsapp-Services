@@ -29,7 +29,6 @@ const createApp = () => {
       allowedHeaders: [
         "Content-Type",
         "Authorization",
-        "ngrok-skip-browser-warning",
         "x-wa-account",
       ],
     }),

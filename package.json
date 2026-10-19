@@ -4,7 +4,7 @@
   "description": "Modular monolith for WhatsApp services (Auth, OTP, Gateway merged)",
   "main": "server.js",
   "scripts": {
-    "dev": "concurrently \"nodemon server.js\" \"ngrok http --url=numerate-resisting-squeamish.ngrok-free.dev 8080\"",
+    "dev": "nodemon server.js",
     "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
