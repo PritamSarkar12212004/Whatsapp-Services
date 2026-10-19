@@ -25,16 +25,11 @@ const createApp = () => {
         }
         return callback(null, false);
       },
-      // PATCH is used by the bot editor — without it the browser's preflight
-      // fails and "could not save" looks like a server bug.
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: [
         "Content-Type",
         "Authorization",
         "ngrok-skip-browser-warning",
-        // Which WhatsApp number a request is for (multi-account switcher).
-        // A header missing here fails the preflight, so the browser never even
-        // sends the request — the app just shows "network error".
         "x-wa-account",
       ],
     }),
