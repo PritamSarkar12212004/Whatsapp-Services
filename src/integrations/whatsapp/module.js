@@ -1,4 +1,5 @@
 import { getSocket, getSocketInfo } from "./manager.js";
+import { restartConnection } from "./connection.js";
 import { promiseTimeout } from "@whiskeysockets/baileys";
 
 // If a send hangs (e.g. stalled socket), fail it instead of blocking the
@@ -40,40 +41,61 @@ const logSocketLookup = (ownerKey, client) => {
 /**
  * Send an OTP message using the system-level WhatsApp connection.
  * Used by the OTP authentication flow.
+ *
+ * Returns a result object instead of swallowing failures: the controller must
+ * never tell the user "OTP sent" when the gateway was dead. A failed/timed-out
+ * send also restarts the gateway socket, because that is the symptom of a
+ * half-open connection that would otherwise stay broken until a process
+ * restart.
  */
 const whatsappModule = async (client, number, otp, content) => {
+  if (!number || !otp) {
+    return { success: false, error: "Number and OTP are required", code: SEND_ERROR.INVALID_NUMBER };
+  }
+
+  if (!client || !client.user) {
+    return {
+      success: false,
+      error: "WhatsApp gateway is not connected",
+      code: SEND_ERROR.NOT_CONNECTED,
+    };
+  }
+
+  let phoneNumber = number.toString().replace(/\D/g, "");
+  if (phoneNumber.length === 10) phoneNumber = `91${phoneNumber}`;
+  else if (phoneNumber.length !== 12) {
+    return {
+      success: false,
+      error: "Invalid phone number",
+      code: SEND_ERROR.INVALID_NUMBER,
+    };
+  }
+
+  const chatId = `${phoneNumber}@s.whatsapp.net`;
+
   try {
-    if (!number || !otp) {
-      console.error("Number and OTP are required");
-      return;
-    }
-
-    if (!client) {
-      console.error("WhatsApp client not connected");
-      return;
-    }
-
-    let phoneNumber = number.toString().replace(/\D/g, "");
-    if (phoneNumber.length === 10) phoneNumber = `91${phoneNumber}`;
-    else if (phoneNumber.length !== 12) {
-      console.error(`Invalid phone number: ${number}`);
-      return;
-    }
-
-    const chatId = `${phoneNumber}@s.whatsapp.net`;
-
-    if (!client.user) {
-      console.error("WhatsApp client is not authenticated");
-      return;
-    }
-
-    const result = await client.sendMessage(chatId, {
-      text: ` ${content}  OTP is: *${otp}*`,
+    const result = await promiseTimeout(SEND_TIMEOUT_MS, (resolve, reject) => {
+      client
+        .sendMessage(chatId, { text: ` ${content}  OTP is: *${otp}*` })
+        .then(resolve)
+        .catch(reject);
     });
 
-    console.log(`OTP sent successfully via WhatsApp. Message ID: ${result.key.id}`);
+    console.log(
+      `OTP sent successfully via WhatsApp. Message ID: ${result.key.id}`,
+    );
+    return { success: true, messageId: result.key.id };
   } catch (err) {
-    console.error(err, { phone: number, otp });
+    // Never log the OTP itself.
+    console.error(`[OTP] send failed for ${phoneNumber}:`, err.message);
+    // A timeout / closed ws means the socket is half-dead: rebuild it so the
+    // next request does not fail too.
+    restartConnection(`OTP send failed: ${err.message}`);
+    return {
+      success: false,
+      error: "Could not send OTP on WhatsApp",
+      code: SEND_ERROR.SEND_FAILED,
+    };
   }
 };
 

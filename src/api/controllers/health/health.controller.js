@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { getClient } from "../../../integrations/whatsapp/connection.js";
+import { getConnectionState } from "../../../integrations/whatsapp/connection.js";
 
 /**
  * Human readable form of mongoose.connection.readyState.
@@ -15,8 +15,25 @@ const DATABASE_STATES = {
 const getDatabaseStatus = () =>
   DATABASE_STATES[mongoose.connection.readyState] || "unknown";
 
-const getWhatsappGatewayStatus = () =>
-  getClient() ? "connected" : "disconnected";
+const getWhatsappGatewayStatus = () => {
+  const state = getConnectionState();
+
+  if (state.connected) return "connected";
+  if (state.status === "auth_required") return "auth_required";
+  if (state.status === "qr_required") return "qr_required";
+  if (state.reconnecting || state.status === "connecting") {
+    return "reconnecting";
+  }
+  return "disconnected";
+};
+
+const getMemoryUsage = () => {
+  const memory = process.memoryUsage();
+  return {
+    rssMb: Math.round(memory.rss / 1024 / 1024),
+    heapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
+  };
+};
 
 /**
  * Liveness probe — always answers 200 while the process is serving traffic.
@@ -31,9 +48,11 @@ const healthController = async (req, res) => {
     environment: process.env.NODE_ENV || "development",
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
+    memory: getMemoryUsage(),
     services: {
       database: getDatabaseStatus(),
       whatsappGateway: getWhatsappGatewayStatus(),
+      whatsappGatewayDetail: getConnectionState(),
     },
   });
 };

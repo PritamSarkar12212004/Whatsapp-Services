@@ -169,6 +169,10 @@ const teardownSocket = (session) => {
   session.qr = null;
   session.reconnecting = false;
   session.connectingSince = null;
+  // Drop a possibly hung init promise; the superseded run bails out on its
+  // own generation check, and a stale promise would otherwise make every
+  // reconnect await it forever.
+  session.initializationPromise = null;
   // Bump the generation so a still-running initializeSocket() for the old
   // socket notices it was superseded and bails out instead of hijacking the
   // session when it finally resolves.
@@ -524,7 +528,11 @@ const initializeSocket = async (key, session) => {
           session.reconnecting = true;
           session.reconnectTimer = setTimeout(() => {
             session.reconnecting = false;
-            connect(key);
+            connect(key).catch((err) =>
+              console.error(
+                `[Baileys] reconnect failed for ${key}: ${err.message}`,
+              ),
+            );
           }, retryDelay);
         } else {
           console.log(
@@ -558,7 +566,11 @@ const initializeSocket = async (key, session) => {
         );
         session.reconnectTimer = setTimeout(() => {
           session.reconnecting = false;
-          connect(key);
+          connect(key).catch((err) =>
+            console.error(
+              `[Baileys] reconnect failed for ${key}: ${err.message}`,
+            ),
+          );
         }, delay);
       }
     } else if (connection === "open") {
@@ -831,6 +843,109 @@ const logout = async (userId) => {
 };
 
 /**
+ * Is this session's socket actually usable right now?
+ * `sock.user` alone is not enough: a half-open websocket keeps the user but
+ * silently drops every send, which looks identical to "WhatsApp stopped
+ * working" until the process is restarted.
+ */
+const isSessionSocketHealthy = (session) =>
+  Boolean(
+    session?.socket?.user && session.socket?.ws?.isOpen !== false && session.socket?.ws,
+  );
+
+let sessionWatchdogTimer = null;
+const SESSION_WATCHDOG_INTERVAL_MS = 60 * 1000;
+
+/**
+ * Periodic self-heal for user sessions.
+ *
+ *  1. A socket that claims to be connected but whose ws is closed is rebuilt.
+ *  2. A session the database still marks as active but this process has no
+ *     socket for (lost to a transient init failure, an exhausted 440 budget,
+ *     etc.) is reconnected. Without this only a full process restart brought
+ *     such sessions back.
+ */
+const sessionWatchdogTick = async () => {
+  for (const [key, session] of sessions.entries()) {
+    if (session.disconnecting || session.reconnecting) continue;
+
+    if (session.status === "connected" && !isSessionSocketHealthy(session)) {
+      console.warn(
+        chalk.yellow(
+          `[Baileys] Session ${key} is marked connected but its socket is closed — rebuilding`,
+        ),
+      );
+      teardownSocket(session);
+      session.status = "disconnected";
+      connect(key).catch((err) =>
+        console.error(
+          `[Baileys] watchdog reconnect failed for ${key}: ${err.message}`,
+        ),
+      );
+    }
+  }
+
+  try {
+    const active = await WhatsAppSession.find({
+      status: { $in: ["connected", "connecting", "qr_required"] },
+    })
+      .select("sessionId userId status")
+      .exec();
+
+    for (const doc of active) {
+      const key = doc.sessionId || doc.userId.toString();
+      const session = sessions.get(key);
+
+      // No in-memory session at all → only revive ones that were connected.
+      // A stale "connecting"/"qr_required" row without a socket is just noise.
+      if (!session) {
+        if (doc.status === "connected") {
+          console.log(
+            chalk.cyan(
+              `[Baileys] Reviving missing session ${key} (DB status: connected)`,
+            ),
+          );
+          connect(key).catch((err) =>
+            console.error(
+              `[Baileys] revive failed for ${key}: ${err.message}`,
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (
+        doc.status === "connected" &&
+        !session.socket &&
+        !session.reconnecting &&
+        !session.initializationPromise
+      ) {
+        console.log(
+          chalk.cyan(`[Baileys] Reconnecting idle session ${key}`),
+        );
+        connect(key).catch((err) =>
+          console.error(
+            `[Baileys] watchdog reconnect failed for ${key}: ${err.message}`,
+          ),
+        );
+      }
+    }
+  } catch (err) {
+    console.error("[Baileys] Session watchdog DB sweep error:", err.message);
+  }
+};
+
+const startSessionWatchdog = () => {
+  if (sessionWatchdogTimer) return;
+  sessionWatchdogTimer = setInterval(() => {
+    sessionWatchdogTick().catch((err) =>
+      console.error("[Baileys] Session watchdog error:", err.message),
+    );
+  }, SESSION_WATCHDOG_INTERVAL_MS);
+  sessionWatchdogTimer.unref?.();
+};
+
+/**
  * Restore active sessions on server restart.
  * Only reconnects sessions marked as "connected" in DB.
  */
@@ -844,7 +959,11 @@ const restoreSessions = async () => {
       // `sessionId` holds the account key (userId or userId::accountId).
       const key = session.sessionId || session.userId.toString();
       console.log(chalk.cyan(`[Baileys] Restoring session for ${key}`));
-      connect(key);
+      connect(key).catch((err) =>
+        console.error(
+          `[Baileys] restore failed for ${key}: ${err.message}`,
+        ),
+      );
     }
     if (activeSessions.length === 0) {
       console.log(
@@ -895,6 +1014,7 @@ export {
   disconnect,
   logout,
   restoreSessions,
+  startSessionWatchdog,
   getSession,
   triggerContactSync,
   shutdownAll,

@@ -1,5 +1,8 @@
 import connectWhatsApp from "../integrations/whatsapp/connection.js";
-import { restoreSessions } from "../integrations/whatsapp/manager.js";
+import {
+  restoreSessions,
+  startSessionWatchdog,
+} from "../integrations/whatsapp/manager.js";
 import { startAutomationScheduler } from "../integrations/whatsapp/groupAutomation.service.js";
 import { syncWhatsappAccountIndexes } from "../migrations/whatsappAccounts.migration.js";
 
@@ -7,8 +10,13 @@ const initWhatsApp = async () => {
   // Replace the single-number indexes before any session is restored.
   await syncWhatsappAccountIndexes();
 
-  connectWhatsApp();
+  // The gateway self-heals, but an initial failure must not become an
+  // unhandled rejection (which kills the whole process on modern Node).
+  connectWhatsApp().catch((err) =>
+    console.error("[Baileys][system] initial connect failed:", err.message),
+  );
   restoreSessions();
+  startSessionWatchdog();
   startAutomationScheduler();
 };
 

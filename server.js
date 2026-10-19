@@ -10,6 +10,16 @@ import { shutdownAll } from "./src/integrations/whatsapp/manager.js";
 
 const PORT = process.env.PORT || 8080;
 
+// A stray rejected promise (Baileys event handler, background sync, queue
+// job) used to terminate the process on modern Node. Log it and keep the
+// server — and the already-established WhatsApp sockets — alive.
+process.on("unhandledRejection", (reason) => {
+  console.error(
+    chalk.red("[Server] Unhandled promise rejection:"),
+    reason instanceof Error ? reason.stack || reason.message : reason,
+  );
+});
+
 const startKeepAlive = () => {
   if (String(process.env.KEEP_ALIVE || "").toLowerCase() !== "true") return;
 
