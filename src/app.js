@@ -28,6 +28,10 @@ const createApp = () => {
       allowedHeaders: [
         "Content-Type",
         "Authorization",
+        // Legacy: the currently deployed Vercel bundle still sends this
+        // header even though ngrok is gone. Keep it allowed until the
+        // frontend is redeployed without it, otherwise preflight fails.
+        "ngrok-skip-browser-warning",
         "x-wa-account",
       ],
     }),
