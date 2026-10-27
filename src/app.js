@@ -16,7 +16,7 @@ const createApp = () => {
       origin: function (origin, callback) {
         if (
           !origin ||
-          ["https://whatsapp-services-frontend.vercel.app"].includes(origin) ||
+          ["https://whatsapp.wishboxdecor.in"].includes(origin) ||
           origin.startsWith("http://localhost") ||
           origin.startsWith("http://127.0.0.1")
         ) {
